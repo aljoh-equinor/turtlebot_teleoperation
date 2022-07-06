@@ -4,12 +4,6 @@ ROS node that performs real-time teleoperation of turtlebot3 waffle_pi. Wheels, 
 
 The arm is controlled by moving a reference point for the end effector based on control inputs, and then using the moveit package for performing inverse kinematics at every change. The joint states are sent directly to the control system on the turtlebot.
 
-Run the node:
-
-```
-rosrun turtlebot_teleoperation teleop.py
-```
-
 Currently requires multiple nodes from [isar-turtlebot](https://github.com/equinor/isar-turtlebot). Easiest approach is to run:
 
 ```
@@ -17,6 +11,12 @@ roslaunch isar_turtlebot turtlebot_manipulator.launch
 ```
 
 which also starts a simulator and planning windows.
+
+Run the node:
+
+```
+rosrun turtlebot_teleoperation teleop.py
+```
 
 ## Control mappings:
 
@@ -30,7 +30,7 @@ Uses the package `pynput` to handle keyboard inputs. Can be installed with `pip`
 
 ### Xbox controller:
 * `Left-stick`: Wheel velocities
-* `Right-Stick` Move reference of arm end effector in the horizontal plane
+* `Right-stick` Move reference of arm end effector in the horizontal plane
 * `Triggers`: Move reference of arm end effector along the vertical axis
 * `Bumpers`: Close and open the gripper
 
