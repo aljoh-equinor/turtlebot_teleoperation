@@ -10,7 +10,7 @@ Currently requires multiple nodes from [isar-turtlebot](https://github.com/equin
 roslaunch isar_turtlebot turtlebot_manipulator.launch
 ```
 
-which also starts a simulator and planning windows.
+which also starts a simulator and planning windows. The turthebot3_manipulation_navigation.rviz must be kept open for the nodes to run, but Gazebo and moveit.rviz can be closed if not needed.
 
 Run the node:
 

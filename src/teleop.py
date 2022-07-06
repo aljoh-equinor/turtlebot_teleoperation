@@ -120,7 +120,8 @@ class ComputeIK:
     def __call__(self, joint_state, request_position):
         return self.apply(joint_state, request_position)
 
-class PlanKinematicPath:
+# Currently unused
+"""class PlanKinematicPath:
 
     def __init__(self):
         rospy.wait_for_service("plan_kinematic_path")
@@ -162,7 +163,7 @@ class PlanKinematicPath:
             pass
 
     def __call__(self, joint_state_start, joint_state_end):
-        return self.apply(joint_state_start, joint_state_end)
+        return self.apply(joint_state_start, joint_state_end)"""
 
 
 def on_press(key):
@@ -177,7 +178,7 @@ def on_release(key):
     except AttributeError:
         pass
 
-if __name__ == "__main__":
+def main():
     print("Starting")
     try:
         rospy.init_node("isar_turtlebot_teleoperation", anonymous=True)
@@ -190,7 +191,7 @@ if __name__ == "__main__":
 
         compute_fk = ComputeFK()
         compute_ik = ComputeIK()
-        plan_kinematic_path = PlanKinematicPath()
+        #plan_kinematic_path = PlanKinematicPath()
     
         joint_state_subscriber = JointStateSubscriber()
         joy_subscriber = JoySubscriber()
@@ -221,19 +222,81 @@ if __name__ == "__main__":
 
         rate = rospy.Rate(100) # 100hz
 
+
+        wheels_twist = Twist()
+        wheels_twist.linear.x = 0
+        wheels_twist.linear.y = 0
+        wheels_twist.linear.z = 0
+        wheels_twist.angular.x = 0
+        wheels_twist.angular.y = 0
+        wheels_twist.angular.z = 0
+
+
+        start_point_arm = JointTrajectoryPoint()
+        start_point_arm.accelerations = [0 for _ in range(4)]
+        start_point_arm.time_from_start = rospy.Duration(0)
+
+        end_point_arm = JointTrajectoryPoint()
+        end_point_arm.accelerations = [0 for _ in range(4)]
+        end_point_arm.time_from_start = rospy.Duration(arm_motion_plan_duration)
+
+        trajectory_arm = JointTrajectory()
+        trajectory_arm.header.frame_id = "base_footprint"
+        trajectory_arm.joint_names = [f"joint{i}" for i in range(1, 5)]
+        trajectory_arm.points = [start_point_arm, end_point_arm]
+
+        goal_arm = FollowJointTrajectoryActionGoal()
+        goal_arm.goal.trajectory = trajectory_arm
+
+
+        start_point_gripper = JointTrajectoryPoint()
+        start_point_gripper.accelerations = [0]
+        start_point_gripper.time_from_start = rospy.Duration(0)
+        
+        end_point_gripper = JointTrajectoryPoint()
+        end_point_gripper.velocities = [0]
+        end_point_gripper.accelerations = [0]
+        end_point_gripper.time_from_start = rospy.Duration(gripper_motion_plan_duration)
+
+        trajectory_gripper = JointTrajectory()
+        trajectory_gripper.header.frame_id = "base_footprint"
+        trajectory_gripper.joint_names = ["gripper"]
+        trajectory_gripper.points = [start_point_gripper, end_point_gripper]
+
+        goal_gripper = FollowJointTrajectoryActionGoal()
+        goal_gripper.goal.trajectory = trajectory_gripper
+        
         while not rospy.is_shutdown():
         
             time_now = rospy.Time.now()
             delta_time = (time_now - time_previous).to_sec()
 
             publish_arm = False
-            for key, value in keybindings_arm.items():
-                if active_keys[key]:
+
+            wheels_twist.linear.x = 0
+            wheels_twist.angular.z = 0
+            
+            for key in list(active_keys):
+                if not active_keys[key]:
+                    del active_keys[key]
+                    continue
+                if key in keybindings_arm:
                     publish_arm = True
-                    vx, vy, vz = value
+                    vx, vy, vz = keybindings_arm[key]
                     reference_position.x += vx * arm_speed * delta_time
                     reference_position.y += vy * arm_speed * delta_time
                     reference_position.z += vz * arm_speed * delta_time
+                
+                elif key in keybindings_wheels:
+                    linear, angular = keybindings_wheels[key]
+
+                    wheels_twist.linear.x += linear * wheels_linear_speed * delta_time
+                    wheels_twist.angular.z += angular * wheels_angular_speed * delta_time
+            
+            wheels_twist.linear.x += joy_subscriber.axes[1] * wheels_linear_speed * delta_time
+            wheels_twist.angular.z += joy_subscriber.axes[0] * wheels_angular_speed * delta_time
+
+            wheel_publisher.publish(wheels_twist)
             
             reference_position.x += joy_subscriber.axes[4] * arm_speed * delta_time
             reference_position.y += joy_subscriber.axes[3] * arm_speed * delta_time
@@ -247,33 +310,18 @@ if __name__ == "__main__":
                     # No solution
                     if len(joint_state_ik.position) == 0:
                         raise IndexError
-
-                    start_point = JointTrajectoryPoint()
-                    start_point.positions = joint_state_subscriber.joint_state.position[2:6]
-                    start_point.velocities = joint_state_subscriber.joint_state.velocity[2:6]
-                    start_point.accelerations = [0 for _ in range(4)]
-                    start_point.time_from_start = rospy.Duration(0)
-
-                    end_point = JointTrajectoryPoint()
-                    end_point.positions = joint_state_ik.position[0:4]
-                    end_point.velocities = joint_state_ik.velocity[0:4]
-                    end_point.accelerations = [0 for _ in range(4)]
-                    end_point.time_from_start = rospy.Duration(arm_motion_plan_duration)
-
-                    trajectory = JointTrajectory()
-                    trajectory.header.frame_id = "base_footprint"
-                    trajectory.joint_names = [f"joint{i}" for i in range(1, 5)]
-                    trajectory.points = [start_point, end_point]
-
-                    #trajectory = plan_kinematic_path(joint_state_subscriber.joint_state, joint_state_ik)
-
-                    goal = FollowJointTrajectoryActionGoal()
-                    goal.header.stamp = time_now
-                    goal.goal_id.stamp = time_now
-                    goal.goal_id.id = f"turtlebot_teleoperation_arm-{goal.goal_id.stamp.secs}.{goal.goal_id.stamp.nsecs}"
-                    goal.goal.trajectory = trajectory
                     
-                    arm_publisher.publish(goal)
+                    goal_arm.goal.trajectory.points[0].positions = joint_state_subscriber.joint_state.position[2:6]
+                    goal_arm.goal.trajectory.points[0].velocities = joint_state_subscriber.joint_state.velocity[2:6]
+
+                    goal_arm.goal.trajectory.points[1].positions = joint_state_ik.position[0:4]
+                    goal_arm.goal.trajectory.points[1].velocities = joint_state_ik.velocity[0:4]
+
+                    goal_arm.header.stamp = time_now
+                    goal_arm.goal_id.stamp = time_now
+                    goal_arm.goal_id.id = f"turtlebot_teleoperation_arm-{goal_arm.goal_id.stamp.secs}.{goal_arm.goal_id.stamp.nsecs}"
+                    
+                    arm_publisher.publish(goal_arm)
                 
                 except IndexError:
                     pass
@@ -287,59 +335,27 @@ if __name__ == "__main__":
 
             if action is not None:
                 try:
-                    start_point = JointTrajectoryPoint()
-                    start_point.positions = [joint_state_subscriber.joint_state.position[0]]
-                    start_point.velocities = [joint_state_subscriber.joint_state.velocity[0]]
-                    start_point.accelerations = [0]
-                    start_point.time_from_start = rospy.Duration(0)
+                    goal_gripper.goal.trajectory.points[0].positions = [joint_state_subscriber.joint_state.position[0]]
+                    goal_gripper.goal.trajectory.points[0].velocities = [joint_state_subscriber.joint_state.velocity[0]]
 
-                    end_point = JointTrajectoryPoint()
-                    end_point.positions = [joint_state_subscriber.joint_state.position[0] + action * gripper_speed * delta_time]
-                    end_point.velocities = [0]
-                    end_point.accelerations = [0]
-                    end_point.time_from_start = rospy.Duration(gripper_motion_plan_duration)
+                    goal_gripper.goal.trajectory.points[1].positions = [joint_state_subscriber.joint_state.position[0] + action * gripper_speed * delta_time]
 
-                    trajectory = JointTrajectory()
-                    trajectory.header.frame_id = "base_footprint"
-                    trajectory.joint_names = ["gripper"]
-                    trajectory.points = [start_point, end_point]
-
-                    goal = FollowJointTrajectoryActionGoal()
-
-                    goal.header.stamp = rospy.Time.now()
-                    goal.goal_id.stamp = rospy.Time.now()
-                    goal.goal_id.id = f"turtlebot_teleoperation_gripper-{goal.goal_id.stamp.secs}.{goal.goal_id.stamp.nsecs}"
-                    goal.goal.trajectory = trajectory
-
-                    gripper_publisher.publish(goal)
+                    goal_gripper.header.stamp = rospy.Time.now()
+                    goal_gripper.goal_id.stamp = rospy.Time.now()
+                    goal_gripper.goal_id.id = f"turtlebot_teleoperation_gripper-{goal_gripper.goal_id.stamp.secs}.{goal_gripper.goal_id.stamp.nsecs}"
+                    
+                    gripper_publisher.publish(goal_gripper)
                 
                 except IndexError:
                     pass
 
-            wheels_twist = Twist()
-            wheels_twist.linear.x = 0
-            wheels_twist.linear.y = 0
-            wheels_twist.linear.z = 0
-            wheels_twist.angular.x = 0
-            wheels_twist.angular.y = 0
-            wheels_twist.angular.z = 0
-            
-            for key, value in keybindings_wheels.items():
-                if active_keys[key]:
-                    linear, angular = keybindings_wheels[key]
-
-                    wheels_twist.linear.x += linear * wheels_linear_speed * delta_time
-                    wheels_twist.angular.z += angular * wheels_angular_speed * delta_time
-            
-            wheels_twist.linear.x += joy_subscriber.axes[1] * wheels_linear_speed * delta_time
-            wheels_twist.angular.z -= joy_subscriber.axes[0] * wheels_angular_speed * delta_time
-
-            wheel_publisher.publish(wheels_twist)
+            time_previous = time_now
 
             rate.sleep()
         
-            time_previous = time_now
-
     except rospy.ROSInterruptException:
         pass
 
+
+if __name__ == "__main__":
+    main()
