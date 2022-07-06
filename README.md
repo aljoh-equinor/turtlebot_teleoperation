@@ -21,18 +21,18 @@ which also starts a simulator and planning windows.
 ## Control mappings:
 
 ### Keyboard:
-* WASD: Wheel velocities
-* IJKL: Move reference of arm end effector in the horizontal plane
-* UO: Move reference of arm end effector along the vertical axis
-* ,.: Close and open the gripper
+* `WASD`: Wheel velocities
+* `IJKL`: Move reference of arm end effector in the horizontal plane
+* `UO`: Move reference of arm end effector along the vertical axis
+* `,.`: Close and open the gripper
 
 Uses the package `pynput` to handle keyboard inputs. Can be installed with `pip`.
 
 ### Xbox controller:
-* Left-stick: Wheel velocities
-* Right-Stick Move reference of arm end effector in the horizontal plane
-* Triggers: Move reference of arm end effector along the vertical axis
-* Bumpers: Close and open the gripper
+* `Left-stick`: Wheel velocities
+* `Right-Stick` Move reference of arm end effector in the horizontal plane
+* `Triggers`: Move reference of arm end effector along the vertical axis
+* `Bumpers`: Close and open the gripper
 
 Xbox controller requires the ROS node joy/joy_node to be run:
 
