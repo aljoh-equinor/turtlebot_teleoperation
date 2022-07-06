@@ -170,6 +170,8 @@ if __name__ == "__main__":
     try:
         rospy.init_node("isar_turtlebot_teleoperation", anonymous=True)
 
+        time_previous = rospy.Time.now()
+
         arm_publisher = rospy.Publisher("arm_controller/follow_joint_trajectory/goal", FollowJointTrajectoryActionGoal, queue_size=10)
         gripper_publisher = rospy.Publisher("gripper_controller/follow_joint_trajectory/goal", FollowJointTrajectoryActionGoal, queue_size=10)
         wheel_publisher = rospy.Publisher("cmd_vel", Twist, queue_size=10)
@@ -193,12 +195,12 @@ if __name__ == "__main__":
         print("Computed initial position")
 
         # Constant parameters
-        arm_speed = 0.001
+        arm_speed = 0.2
         arm_motion_plan_duration = 0.01
-        gripper_speed = 0.001
+        gripper_speed = 0.2
         gripper_motion_plan_duration = 0.01
-        wheels_linear_speed = 0.1
-        wheels_angular_speed = 0.5
+        wheels_linear_speed = 10
+        wheels_angular_speed = 100
 
         print("Ready")
         
@@ -208,15 +210,18 @@ if __name__ == "__main__":
         rate = rospy.Rate(100) # 100hz
 
         while not rospy.is_shutdown():
+        
+            time_now = rospy.Time.now()
+            delta_time = (time_now - time_previous).to_sec()
 
             publish_arm = False
             for key, value in keybindings_arm.items():
                 if active_keys[key]:
                     publish_arm = True
                     vx, vy, vz = value
-                    reference_position.x += vx * arm_speed
-                    reference_position.y += vy * arm_speed
-                    reference_position.z += vz * arm_speed
+                    reference_position.x += vx * arm_speed * delta_time
+                    reference_position.y += vy * arm_speed * delta_time
+                    reference_position.z += vz * arm_speed * delta_time
             
             if publish_arm:
                 try:
@@ -246,8 +251,8 @@ if __name__ == "__main__":
                     #trajectory = plan_kinematic_path(joint_state_subscriber.joint_state, joint_state_ik)
 
                     goal = FollowJointTrajectoryActionGoal()
-                    goal.header.stamp = rospy.Time.now()
-                    goal.goal_id.stamp = rospy.Time.now()
+                    goal.header.stamp = time_now
+                    goal.goal_id.stamp = time_now
                     goal.goal_id.id = f"turtlebot_teleoperation_arm-{goal.goal_id.stamp.secs}.{goal.goal_id.stamp.nsecs}"
                     goal.goal.trajectory = trajectory
                     
@@ -272,7 +277,7 @@ if __name__ == "__main__":
                     start_point.time_from_start = rospy.Duration(0)
 
                     end_point = JointTrajectoryPoint()
-                    end_point.positions = [joint_state_subscriber.joint_state.position[0] + action * gripper_speed]
+                    end_point.positions = [joint_state_subscriber.joint_state.position[0] + action * gripper_speed * delta_time]
                     end_point.velocities = [0]
                     end_point.accelerations = [0]
                     end_point.time_from_start = rospy.Duration(gripper_motion_plan_duration)
@@ -306,12 +311,14 @@ if __name__ == "__main__":
                 if active_keys[key]:
                     linear, angular = keybindings_wheels[key]
 
-                    wheels_twist.linear.x += linear * wheels_linear_speed
-                    wheels_twist.angular.z += angular * wheels_angular_speed
+                    wheels_twist.linear.x += linear * wheels_linear_speed * delta_time
+                    wheels_twist.angular.z += angular * wheels_angular_speed * delta_time
 
             wheel_publisher.publish(wheels_twist)
 
             rate.sleep()
+        
+            time_previous = time_now
 
     except rospy.ROSInterruptException:
         pass
