@@ -7,7 +7,7 @@ from collections import defaultdict
 import rospy
 from std_msgs.msg import Header
 from geometry_msgs.msg import Twist
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import JointState, Joy
 from moveit_msgs.msg import MotionPlanRequest, Constraints, JointConstraint, PositionIKRequest, RobotState
 from moveit_msgs.srv import GetPositionIK, GetMotionPlan, GetPositionFK
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -46,6 +46,18 @@ class JointStateSubscriber:
     
     def update(self, joint_state):
         self.joint_state = joint_state
+
+class JoySubscriber:
+
+    def __init__(self):
+        self.subscriber = rospy.Subscriber("joy", Joy, self.update)
+
+        self.axes = []
+        self.buttons = []
+    
+    def update(self, joy):
+        self.axes = joy.axes
+        self.buttons = joy.buttons
 
 class ComputeFK:
 
@@ -159,14 +171,15 @@ if __name__ == "__main__":
         rospy.init_node("isar_turtlebot_teleoperation", anonymous=True)
 
         arm_publisher = rospy.Publisher("arm_controller/follow_joint_trajectory/goal", FollowJointTrajectoryActionGoal, queue_size=10)
-        wheel_publisher = rospy.Publisher("cmd_vel", Twist, queue_size=10)
         gripper_publisher = rospy.Publisher("gripper_controller/follow_joint_trajectory/goal", FollowJointTrajectoryActionGoal, queue_size=10)
+        wheel_publisher = rospy.Publisher("cmd_vel", Twist, queue_size=10)
 
         compute_fk = ComputeFK()
         compute_ik = ComputeIK()
         plan_kinematic_path = PlanKinematicPath()
     
         joint_state_subscriber = JointStateSubscriber()
+        joy_subscriber = JoySubscriber()
 
         while not joint_state_subscriber.joint_state.position and not rospy.is_shutdown():
             pass
