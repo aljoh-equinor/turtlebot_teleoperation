@@ -6,7 +6,7 @@ from collections import defaultdict
 
 import rospy
 from std_msgs.msg import Header
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Point
 from sensor_msgs.msg import JointState, Joy
 from moveit_msgs.msg import MotionPlanRequest, Constraints, JointConstraint, PositionIKRequest, RobotState
 from moveit_msgs.srv import GetPositionIK, GetMotionPlan, GetPositionFK
@@ -205,6 +205,8 @@ def main():
     
         reference_position = compute_fk(joint_state_subscriber.joint_state)
 
+        reference_velocity = Point()
+
         print("Computed initial position")
 
         # Constant parameters
@@ -275,6 +277,11 @@ def main():
 
             wheels_twist.linear.x = 0
             wheels_twist.angular.z = 0
+
+
+            reference_velocity.x = 0
+            reference_velocity.y = 0
+            reference_velocity.z = 0
             
             for key in list(active_keys):
                 if not active_keys[key]:
@@ -283,9 +290,9 @@ def main():
                 if key in keybindings_arm:
                     publish_arm = True
                     vx, vy, vz = keybindings_arm[key]
-                    reference_position.x += vx * arm_speed * delta_time
-                    reference_position.y += vy * arm_speed * delta_time
-                    reference_position.z += vz * arm_speed * delta_time
+                    reference_velocity.x += vx * arm_speed * delta_time
+                    reference_velocity.y += vy * arm_speed * delta_time
+                    reference_velocity.z += vz * arm_speed * delta_time
                 
                 elif key in keybindings_wheels:
                     linear, angular = keybindings_wheels[key]
@@ -298,17 +305,26 @@ def main():
 
             wheel_publisher.publish(wheels_twist)
             
-            reference_position.x += joy_subscriber.axes[4] * arm_speed * delta_time
-            reference_position.y += joy_subscriber.axes[3] * arm_speed * delta_time
-            reference_position.z += (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2 * arm_speed * delta_time
+            reference_velocity.x += joy_subscriber.axes[4] * arm_speed * delta_time
+            reference_velocity.y += joy_subscriber.axes[3] * arm_speed * delta_time
+            reference_velocity.z += (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2 * arm_speed * delta_time
             publish_arm = joy_subscriber.axes[4] != 0 or joy_subscriber.axes[3] != 0 or joy_subscriber.axes[2] - joy_subscriber.axes[5] != 0
+
+            reference_position.x += reference_velocity.x
+            reference_position.y += reference_velocity.y
+            reference_position.z += reference_velocity.z
             
             if publish_arm:
                 try:
                     joint_state_ik = compute_ik(joint_state_subscriber.joint_state, reference_position)
 
                     # No solution
+                    # Revert the changes to the reference position to unstuck it
+                    # Then escape the try block by raising an exception
                     if len(joint_state_ik.position) == 0:
+                        reference_position.x -= reference_velocity.x
+                        reference_position.y -= reference_velocity.y
+                        reference_position.z -= reference_velocity.z
                         raise IndexError
                     
                     goal_arm.goal.trajectory.points[0].positions = joint_state_subscriber.joint_state.position[2:6]
