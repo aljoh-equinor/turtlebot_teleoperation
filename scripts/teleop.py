@@ -52,8 +52,20 @@ class JoySubscriber:
     def __init__(self):
         self.subscriber = rospy.Subscriber("joy", Joy, self.update)
 
-        self.axes = []
-        self.buttons = []
+        # Xbox mapping:
+
+        # Axes:
+        # LeftX, LeftY, LeftTrigger, RightX, RightY, RightTrigger, DPadX, DPadY
+        # SticksX: 1: left, -1: right
+        # SticksY: 1: up, -1: down
+        # Triggers: 1: off, -1, in
+
+        # Buttons:
+        # A, B, X, Y, LeftBumper, RightBumper, View / Select, Menu / Start, Xbox, LeftStick, RightStick
+        # 0: off, 1: in
+
+        self.axes = [0, 0, 1, 0, 0, 1, 0, 0]
+        self.buttons = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     
     def update(self, joy):
         self.axes = joy.axes
@@ -199,7 +211,7 @@ if __name__ == "__main__":
         arm_motion_plan_duration = 0.01
         gripper_speed = 0.2
         gripper_motion_plan_duration = 0.01
-        wheels_linear_speed = 10
+        wheels_linear_speed = 20
         wheels_angular_speed = 100
 
         print("Ready")
@@ -222,6 +234,11 @@ if __name__ == "__main__":
                     reference_position.x += vx * arm_speed * delta_time
                     reference_position.y += vy * arm_speed * delta_time
                     reference_position.z += vz * arm_speed * delta_time
+            
+            reference_position.x += joy_subscriber.axes[4] * arm_speed * delta_time
+            reference_position.y += joy_subscriber.axes[3] * arm_speed * delta_time
+            reference_position.z += (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2 * arm_speed * delta_time
+            publish_arm = joy_subscriber.axes[4] != 0 or joy_subscriber.axes[3] != 0 or joy_subscriber.axes[2] - joy_subscriber.axes[5] != 0
             
             if publish_arm:
                 try:
@@ -263,9 +280,9 @@ if __name__ == "__main__":
             
             action = None
             gripper_key0, gripper_key1 = keybindings_gripper.keys()
-            if active_keys[gripper_key0] and not active_keys[gripper_key1]:
+            if active_keys[gripper_key0] and not active_keys[gripper_key1] or not joy_subscriber.buttons[4] and joy_subscriber.buttons[5]:
                 action = keybindings_gripper[gripper_key0]
-            elif not active_keys[gripper_key0] and active_keys[gripper_key1]:
+            elif not active_keys[gripper_key0] and active_keys[gripper_key1] or joy_subscriber.buttons[4] and not joy_subscriber.buttons[5]:
                 action = keybindings_gripper[gripper_key1]
 
             if action is not None:
@@ -313,6 +330,9 @@ if __name__ == "__main__":
 
                     wheels_twist.linear.x += linear * wheels_linear_speed * delta_time
                     wheels_twist.angular.z += angular * wheels_angular_speed * delta_time
+            
+            wheels_twist.linear.x += joy_subscriber.axes[1] * wheels_linear_speed * delta_time
+            wheels_twist.angular.z -= joy_subscriber.axes[0] * wheels_angular_speed * delta_time
 
             wheel_publisher.publish(wheels_twist)
 
