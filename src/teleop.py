@@ -68,8 +68,15 @@ class JoySubscriber:
         self.buttons = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     
     def update(self, joy):
-        self.axes = joy.axes
         self.buttons = joy.buttons
+
+        for i in range(len(self.axes)):
+            if joy.axes[i] > 0 and joy.axes[i] < 0.2:
+                self.axes[i] = 0
+            elif joy.axes[i] < 0 and joy.axes[i] > -0.2:
+                self.axes[i] = 0
+            else:
+                self.axes[i] = joy.axes[i]
 
 class ComputeFK:
 
@@ -304,7 +311,7 @@ def main():
 
             wheel_publisher.publish(wheels_twist)
             
-            if not publish_arm and joy_subscriber.axes[4] != 0 or joy_subscriber.axes[3] != 0 or joy_subscriber.axes[2] - joy_subscriber.axes[5] != 0:
+            if not publish_arm and (joy_subscriber.axes[4] != 0 or joy_subscriber.axes[3] != 0 or joy_subscriber.axes[2] - joy_subscriber.axes[5] != 0):
                 publish_arm = True
                 reference_velocity.x += joy_subscriber.axes[4] * arm_speed * delta_time
                 reference_velocity.y += joy_subscriber.axes[3] * arm_speed * delta_time
@@ -344,9 +351,9 @@ def main():
             
             action = None
             gripper_key0, gripper_key1 = keybindings_gripper.keys()
-            if active_keys[gripper_key0] and not active_keys[gripper_key1] or not joy_subscriber.buttons[4] and joy_subscriber.buttons[5]:
+            if active_keys[gripper_key0] and not active_keys[gripper_key1] or joy_subscriber.buttons[4] == 0 and joy_subscriber.buttons[5] == 1:
                 action = keybindings_gripper[gripper_key0]
-            elif not active_keys[gripper_key0] and active_keys[gripper_key1] or joy_subscriber.buttons[4] and not joy_subscriber.buttons[5]:
+            elif not active_keys[gripper_key0] and active_keys[gripper_key1] or joy_subscriber.buttons[4] == 1 and joy_subscriber.buttons[5] == 0:
                 action = keybindings_gripper[gripper_key1]
 
             if action is not None:
