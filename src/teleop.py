@@ -278,7 +278,6 @@ def main():
             wheels_twist.linear.x = 0
             wheels_twist.angular.z = 0
 
-
             reference_velocity.x = 0
             reference_velocity.y = 0
             reference_velocity.z = 0
@@ -305,10 +304,11 @@ def main():
 
             wheel_publisher.publish(wheels_twist)
             
-            reference_velocity.x += joy_subscriber.axes[4] * arm_speed * delta_time
-            reference_velocity.y += joy_subscriber.axes[3] * arm_speed * delta_time
-            reference_velocity.z += (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2 * arm_speed * delta_time
-            publish_arm = joy_subscriber.axes[4] != 0 or joy_subscriber.axes[3] != 0 or joy_subscriber.axes[2] - joy_subscriber.axes[5] != 0
+            if not publish_arm and joy_subscriber.axes[4] != 0 or joy_subscriber.axes[3] != 0 or joy_subscriber.axes[2] - joy_subscriber.axes[5] != 0:
+                publish_arm = True
+                reference_velocity.x += joy_subscriber.axes[4] * arm_speed * delta_time
+                reference_velocity.y += joy_subscriber.axes[3] * arm_speed * delta_time
+                reference_velocity.z += (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2 * arm_speed * delta_time
 
             reference_position.x += reference_velocity.x
             reference_position.y += reference_velocity.y
