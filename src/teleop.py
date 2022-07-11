@@ -5,13 +5,13 @@ from pynput import keyboard
 from collections import defaultdict
 
 import rospy
-from std_msgs.msg import Header
+from std_msgs.msg import Header, Bool
 from geometry_msgs.msg import Twist, Point
 from sensor_msgs.msg import JointState, Joy
 from moveit_msgs.msg import MotionPlanRequest, Constraints, JointConstraint, PositionIKRequest, RobotState
 from moveit_msgs.srv import GetPositionIK, GetMotionPlan, GetPositionFK
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
-from control_msgs.msg import FollowJointTrajectoryActionGoal
+from control_msgs.msg import FollowJointTrajectoryActionGoal, JointTolerance
 
 
 keybindings_arm = {
@@ -78,6 +78,25 @@ class JoySubscriber:
             else:
                 self.axes[i] = joy.axes[i]
 
+class TeleopSubscriber:
+
+    def __init__(self):
+        self.subscriber = rospy.Subscriber("turtlebot_teleop", Bool, self.update)
+        self.publisher = rospy.Publisher("turtlebot_teleop", Bool, queue_size=10)
+
+        self.activated = False
+    
+    def update(self, message):
+        self.activated = message.data
+    
+    def stop(self):
+        self.activated = False
+        
+        message = Bool()
+        message.data = False
+        self.publisher.publish(message)
+
+
 class ComputeFK:
 
     def __init__(self):
@@ -127,8 +146,7 @@ class ComputeIK:
     def __call__(self, joint_state, request_position):
         return self.apply(joint_state, request_position)
 
-# Currently unused
-"""class PlanKinematicPath:
+class PlanKinematicPath:
 
     def __init__(self):
         rospy.wait_for_service("plan_kinematic_path")
@@ -170,7 +188,7 @@ class ComputeIK:
             pass
 
     def __call__(self, joint_state_start, joint_state_end):
-        return self.apply(joint_state_start, joint_state_end)"""
+        return self.apply(joint_state_start, joint_state_end)
 
 
 def on_press(key):
@@ -198,10 +216,11 @@ def main():
 
         compute_fk = ComputeFK()
         compute_ik = ComputeIK()
-        #plan_kinematic_path = PlanKinematicPath()
+        plan_kinematic_path = PlanKinematicPath()
     
         joint_state_subscriber = JointStateSubscriber()
         joy_subscriber = JoySubscriber()
+        teleop_subscriber = TeleopSubscriber()
 
         # Wait until a joint_state message is received
         # Necessary to compute the reference_position
@@ -218,11 +237,11 @@ def main():
 
         # Constant parameters
         arm_speed = 0.2
-        arm_motion_plan_duration = 0.01
-        gripper_speed = 0.2
-        gripper_motion_plan_duration = 0.01
-        wheels_linear_speed = 20
-        wheels_angular_speed = 100
+        arm_motion_plan_duration = 0.001
+        gripper_speed = 0.1
+        gripper_motion_plan_duration = 0.001
+        wheels_linear_speed = 50
+        wheels_angular_speed = 50
 
         print("Ready")
         
@@ -254,8 +273,21 @@ def main():
         trajectory_arm.joint_names = [f"joint{i}" for i in range(1, 5)]
         trajectory_arm.points = [start_point_arm, end_point_arm]
 
+        for i in range(2, 101):
+            point = JointTrajectoryPoint()
+            point.accelerations = [0 for _ in range(4)]
+            point.time_from_start = rospy.Duration(arm_motion_plan_duration * i)
+            trajectory_arm.points.append(point)
+
         goal_arm = FollowJointTrajectoryActionGoal()
         goal_arm.goal.trajectory = trajectory_arm
+        goal_arm.goal.goal_time_tolerance = rospy.Duration(5) #########
+        for i in range(4):
+            goal_arm.goal.goal_tolerance.append(JointTolerance())
+            goal_arm.goal.goal_tolerance[i].name = "joint" + str(i + 1)
+            goal_arm.goal.goal_tolerance[i].position = 6
+            goal_arm.goal.goal_tolerance[i].velocity = 6
+            goal_arm.goal.goal_tolerance[i].acceleration = 6
 
 
         start_point_gripper = JointTrajectoryPoint()
@@ -276,6 +308,15 @@ def main():
         goal_gripper.goal.trajectory = trajectory_gripper
         
         while not rospy.is_shutdown():
+
+            rate.sleep()
+
+            #if not teleop_subscriber.activated:
+            #    continue
+
+            #if joy_subscriber.buttons[7] == 1:
+            #    teleop_subscriber.stop()
+            #    continue
         
             time_now = rospy.Time.now()
             delta_time = (time_now - time_previous).to_sec()
@@ -316,12 +357,12 @@ def main():
                 reference_velocity.x += joy_subscriber.axes[4] * arm_speed * delta_time
                 reference_velocity.y += joy_subscriber.axes[3] * arm_speed * delta_time
                 reference_velocity.z += (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2 * arm_speed * delta_time
-
-            reference_position.x += reference_velocity.x
-            reference_position.y += reference_velocity.y
-            reference_position.z += reference_velocity.z
             
             if publish_arm:
+
+                reference_position.x += reference_velocity.x
+                reference_position.y += reference_velocity.y
+                reference_position.z += reference_velocity.z
                 try:
                     joint_state_ik = compute_ik(joint_state_subscriber.joint_state, reference_position)
 
@@ -340,11 +381,20 @@ def main():
                     goal_arm.goal.trajectory.points[1].positions = joint_state_ik.position[0:4]
                     goal_arm.goal.trajectory.points[1].velocities = joint_state_ik.velocity[0:4]
 
+                    for i in range(2, 101):
+                        goal_arm.goal.trajectory.points[i].positions = joint_state_ik.position[0:4]
+                        goal_arm.goal.trajectory.points[i].velocities = joint_state_ik.velocity[0:4]
+
                     goal_arm.header.stamp = time_now
                     goal_arm.goal_id.stamp = time_now
                     goal_arm.goal_id.id = f"turtlebot_teleoperation_arm-{goal_arm.goal_id.stamp.secs}.{goal_arm.goal_id.stamp.nsecs}"
+
+                    #trajectory_arm = plan_kinematic_path(joint_state_subscriber.joint_state, joint_state_ik)
+                    #goal_arm.goal.trajectory = trajectory_arm
                     
                     arm_publisher.publish(goal_arm)
+
+                    
                 
                 except IndexError:
                     pass
@@ -373,8 +423,6 @@ def main():
                     pass
 
             time_previous = time_now
-
-            rate.sleep()
         
     except rospy.ROSInterruptException:
         pass
