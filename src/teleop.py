@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+import math
+
 from pynput import keyboard
 
 from collections import defaultdict
@@ -167,8 +169,8 @@ class PlanKinematicPath:
         for i in range(4):
             joint_constraint = JointConstraint()
             joint_constraint.joint_name = "joint" + str(i + 1)
-            joint_constraint.tolerance_above = 0.0001
-            joint_constraint.tolerance_below = 0.0001
+            joint_constraint.tolerance_above = 0.001
+            joint_constraint.tolerance_below = 0.001
             joint_constraint.weight = 1
             goal_constraints.joint_constraints.append(joint_constraint)
 
@@ -228,27 +230,60 @@ def main():
             pass
 
         print("Read initial joint state")
-    
-        reference_position = compute_fk(joint_state_subscriber.joint_state)
-
-        reference_velocity = Point()
-
-        print("Computed initial position")
 
         # Constant parameters
-        arm_speed = 0.2
+        arm_speed_x = 0.2
+        arm_speed_y = 1
+        arm_speed_z = 0.2
         arm_motion_plan_duration = 0.001
+        arm_trajectory_points = 10
+
         gripper_speed = 0.1
-        gripper_motion_plan_duration = 0.001
-        wheels_linear_speed = 50
-        wheels_angular_speed = 50
+        gripper_motion_plan_duration = 0.1
+        gripper_trajectory_points = 100
+
+        wheels_linear_speed = 20
+        wheels_angular_speed = 20
+
+        trajectory_arm = JointTrajectory()
+        trajectory_arm.header.frame_id = "base_footprint"
+        trajectory_arm.joint_names = [f"joint{i}" for i in range(1, 5)]
+        trajectory_arm.points = []
+
+        for i in range(arm_trajectory_points + 1):
+            point = JointTrajectoryPoint()
+            point.accelerations = [0 for _ in range(4)]
+            point.time_from_start = rospy.Duration(arm_motion_plan_duration * i)
+            trajectory_arm.points.append(point)
+
+        goal_arm = FollowJointTrajectoryActionGoal()
+        goal_arm.goal.trajectory = trajectory_arm
+        """goal_arm.goal.goal_time_tolerance = rospy.Duration(5)
+        for i in range(4):
+            goal_arm.goal.goal_tolerance.append(JointTolerance())
+            goal_arm.goal.goal_tolerance[i].name = "joint" + str(i + 1)
+            goal_arm.goal.goal_tolerance[i].position = 6
+            goal_arm.goal.goal_tolerance[i].velocity = 6
+            goal_arm.goal.goal_tolerance[i].acceleration = 6"""
+
+        reference_position = compute_fk(joint_state_subscriber.joint_state)
+        reference_position.y = 0
+        
+        reference_angle = joint_state_subscriber.joint_state.position[2]
+
+        reference_velocity = Point()
+        reference_velocity.x = 0
+        reference_velocity.y = 0
+        reference_velocity.z = 0
+
+        joint_state_ik = compute_ik(joint_state_subscriber.joint_state, reference_position)
+
+        print("Computed initial position")
 
         print("Ready")
         
         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         listener.start()
-
-        rate = rospy.Rate(100) # 100hz
 
 
         wheels_twist = Twist()
@@ -258,36 +293,6 @@ def main():
         wheels_twist.angular.x = 0
         wheels_twist.angular.y = 0
         wheels_twist.angular.z = 0
-
-
-        start_point_arm = JointTrajectoryPoint()
-        start_point_arm.accelerations = [0 for _ in range(4)]
-        start_point_arm.time_from_start = rospy.Duration(0)
-
-        end_point_arm = JointTrajectoryPoint()
-        end_point_arm.accelerations = [0 for _ in range(4)]
-        end_point_arm.time_from_start = rospy.Duration(arm_motion_plan_duration)
-
-        trajectory_arm = JointTrajectory()
-        trajectory_arm.header.frame_id = "base_footprint"
-        trajectory_arm.joint_names = [f"joint{i}" for i in range(1, 5)]
-        trajectory_arm.points = [start_point_arm, end_point_arm]
-
-        for i in range(2, 101):
-            point = JointTrajectoryPoint()
-            point.accelerations = [0 for _ in range(4)]
-            point.time_from_start = rospy.Duration(arm_motion_plan_duration * i)
-            trajectory_arm.points.append(point)
-
-        goal_arm = FollowJointTrajectoryActionGoal()
-        goal_arm.goal.trajectory = trajectory_arm
-        goal_arm.goal.goal_time_tolerance = rospy.Duration(5) #########
-        for i in range(4):
-            goal_arm.goal.goal_tolerance.append(JointTolerance())
-            goal_arm.goal.goal_tolerance[i].name = "joint" + str(i + 1)
-            goal_arm.goal.goal_tolerance[i].position = 6
-            goal_arm.goal.goal_tolerance[i].velocity = 6
-            goal_arm.goal.goal_tolerance[i].acceleration = 6
 
 
         start_point_gripper = JointTrajectoryPoint()
@@ -306,6 +311,8 @@ def main():
 
         goal_gripper = FollowJointTrajectoryActionGoal()
         goal_gripper.goal.trajectory = trajectory_gripper
+
+        rate = rospy.Rate(100) # 100hz
         
         while not rospy.is_shutdown():
 
@@ -329,17 +336,21 @@ def main():
             reference_velocity.x = 0
             reference_velocity.y = 0
             reference_velocity.z = 0
+
+            reset_position = False
             
             for key in list(active_keys):
                 if not active_keys[key]:
                     del active_keys[key]
                     continue
+                if key == "h":
+                    reset_position = True
+                    continue
                 if key in keybindings_arm:
-                    publish_arm = True
                     vx, vy, vz = keybindings_arm[key]
-                    reference_velocity.x += vx * arm_speed * delta_time
-                    reference_velocity.y += vy * arm_speed * delta_time
-                    reference_velocity.z += vz * arm_speed * delta_time
+                    reference_velocity.x += vx * arm_speed_x * delta_time
+                    reference_velocity.y += vy * arm_speed_y * delta_time
+                    reference_velocity.z += vz * arm_speed_z * delta_time
                 
                 elif key in keybindings_wheels:
                     linear, angular = keybindings_wheels[key]
@@ -347,23 +358,52 @@ def main():
                     wheels_twist.linear.x += linear * wheels_linear_speed * delta_time
                     wheels_twist.angular.z += angular * wheels_angular_speed * delta_time
             
+            if not reset_position and joy_subscriber.buttons[0] == 1:
+                reset_position = True
+            
+            if reset_position:
+                start_state = JointState()
+                start_state.header = joint_state_subscriber.joint_state.header
+                start_state.name = joint_state_subscriber.joint_state.name[2:6]
+                start_state.position = joint_state_subscriber.joint_state.position[2:6]
+                start_state.velocity = joint_state_subscriber.joint_state.velocity[2:6]
+                #start_state.effort = joint_state_subscriber.joint_state.effort[2:6]
+
+                end_state = JointState()
+                end_state.header = joint_state_subscriber.joint_state.header
+                end_state.name = joint_state_subscriber.joint_state.name[2:6]
+                end_state.position = [0, 0, 0, 0]
+                end_state.velocity = [0, 0, 0, 0]
+                #end_state.effort = [0, 0, 0, 0]
+
+                trajectory_home = plan_kinematic_path(start_state, end_state)
+
+                goal_arm.header.stamp = time_now
+                goal_arm.goal_id.stamp = time_now
+                goal_arm.goal_id.id = f"turtlebot_teleoperation_arm-{goal_arm.goal_id.stamp.secs}.{goal_arm.goal_id.stamp.nsecs}"
+                goal_arm.goal.trajectory = trajectory_home
+
+                arm_publisher.publish(goal_arm)
+
+                reference_position = compute_fk(end_state)
+                reference_position.y = 0
+                reference_angle = 0
+                continue
+            
             wheels_twist.linear.x += joy_subscriber.axes[1] * wheels_linear_speed * delta_time
             wheels_twist.angular.z += joy_subscriber.axes[0] * wheels_angular_speed * delta_time
 
             wheel_publisher.publish(wheels_twist)
             
             if not publish_arm and (joy_subscriber.axes[4] != 0 or joy_subscriber.axes[3] != 0 or joy_subscriber.axes[2] - joy_subscriber.axes[5] != 0):
-                publish_arm = True
-                reference_velocity.x += joy_subscriber.axes[4] * arm_speed * delta_time
-                reference_velocity.y += joy_subscriber.axes[3] * arm_speed * delta_time
-                reference_velocity.z += (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2 * arm_speed * delta_time
+                reference_velocity.x += joy_subscriber.axes[4] * arm_speed_x * delta_time
+                reference_velocity.y += joy_subscriber.axes[3] * arm_speed_y * delta_time
+                reference_velocity.z += (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2 * arm_speed_z * delta_time
             
-            if publish_arm:
-
-                reference_position.x += reference_velocity.x
-                reference_position.y += reference_velocity.y
-                reference_position.z += reference_velocity.z
-                try:
+            try:
+                if reference_velocity.x != 0 or reference_velocity.z != 0:
+                    reference_position.x += reference_velocity.x
+                    reference_position.z += reference_velocity.z
                     joint_state_ik = compute_ik(joint_state_subscriber.joint_state, reference_position)
 
                     # No solution
@@ -371,33 +411,34 @@ def main():
                     # Then escape the try block by raising an exception
                     if len(joint_state_ik.position) == 0:
                         reference_position.x -= reference_velocity.x
-                        reference_position.y -= reference_velocity.y
                         reference_position.z -= reference_velocity.z
                         raise IndexError
+
+                if reference_velocity.y != 0:
+                    if reference_angle < 0.8 * math.pi and reference_angle > - 0.8 * math.pi:
+                        reference_angle += reference_velocity.y
+                
+                if reference_velocity.x != 0 or reference_velocity.z != 0 or reference_velocity.y != 0:
+                    trajectory_arm.points[0].positions = joint_state_subscriber.joint_state.position[2:6]
+                    trajectory_arm.points[0].velocities = joint_state_subscriber.joint_state.velocity[2:6]
+
+                    end_positions = [reference_angle] + list(joint_state_ik.position[1:4])
+
+                    for i in range(1, arm_trajectory_points + 1):
+                        trajectory_arm.points[i].positions = [0, 0, 0, 0]
+                        for j in range(4):
+                            trajectory_arm.points[i].positions[j] = end_positions[j] * (i - 1) / (arm_trajectory_points - 1) + joint_state_subscriber.joint_state.position[j + 2] * (arm_trajectory_points - i) / (arm_trajectory_points - 1)
+                        trajectory_arm.points[i].velocities = [reference_velocity.y] + list(joint_state_ik.velocity[1:4])
                     
-                    goal_arm.goal.trajectory.points[0].positions = joint_state_subscriber.joint_state.position[2:6]
-                    goal_arm.goal.trajectory.points[0].velocities = joint_state_subscriber.joint_state.velocity[2:6]
-
-                    goal_arm.goal.trajectory.points[1].positions = joint_state_ik.position[0:4]
-                    goal_arm.goal.trajectory.points[1].velocities = joint_state_ik.velocity[0:4]
-
-                    for i in range(2, 101):
-                        goal_arm.goal.trajectory.points[i].positions = joint_state_ik.position[0:4]
-                        goal_arm.goal.trajectory.points[i].velocities = joint_state_ik.velocity[0:4]
-
+                    goal_arm.goal.trajectory = trajectory_arm
                     goal_arm.header.stamp = time_now
                     goal_arm.goal_id.stamp = time_now
                     goal_arm.goal_id.id = f"turtlebot_teleoperation_arm-{goal_arm.goal_id.stamp.secs}.{goal_arm.goal_id.stamp.nsecs}"
 
-                    #trajectory_arm = plan_kinematic_path(joint_state_subscriber.joint_state, joint_state_ik)
-                    #goal_arm.goal.trajectory = trajectory_arm
-                    
                     arm_publisher.publish(goal_arm)
-
-                    
-                
-                except IndexError:
-                    pass
+                        
+            except IndexError:
+                pass
             
             action = None
             gripper_key0, gripper_key1 = keybindings_gripper.keys()
