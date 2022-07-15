@@ -216,10 +216,6 @@ def main():
         time_previous = rospy.Time.now()
 
         arm_publisher = rospy.Publisher("arm_controller/follow_joint_trajectory/goal", FollowJointTrajectoryActionGoal, queue_size=10)
-        arm_cancel_publisher = rospy.Publisher("/arm_controller/follow_joint_trajectory/cancel", GoalID, queue_size=10)
-        #stop_publisher = rospy.Publisher("joint_trajectory_point", Float64MultiArray, queue_size=10)
-        #arm_cancel_publisher = rospy.Publisher("/execute_trajectory/cancel", GoalID, queue_size=10)
-        #arm_cancel_publisher = rospy.Publisher("/move_group/cancel", GoalID, queue_size=10)
         gripper_publisher = rospy.Publisher("gripper_controller/follow_joint_trajectory/goal", FollowJointTrajectoryActionGoal, queue_size=10)
         wheel_publisher = rospy.Publisher("cmd_vel", Twist, queue_size=10)
 
@@ -235,8 +231,6 @@ def main():
         # Necessary to compute the reference_position
         while not joint_state_subscriber.joint_state.position and not rospy.is_shutdown():
             pass
-        
-        joint_state_subscriber.joint_position_estimate = list(joint_state_subscriber.joint_state.position[2:6])
 
         print("Read initial joint state")
 
@@ -266,7 +260,7 @@ def main():
             trajectory_arm.points.append(point)
 
         goal_arm = FollowJointTrajectoryActionGoal()
-        goal_arm.goal.trajectory = trajectory_arm
+        #goal_arm.goal.trajectory = trajectory_arm
         """goal_arm.goal.goal_time_tolerance = rospy.Duration(5)
         for i in range(4):
             goal_arm.goal.goal_tolerance.append(JointTolerance())
@@ -274,23 +268,54 @@ def main():
             goal_arm.goal.goal_tolerance[i].position = 6
             goal_arm.goal.goal_tolerance[i].velocity = 6
             goal_arm.goal.goal_tolerance[i].acceleration = 6"""
+        
 
-        reference_position = compute_fk(joint_state_subscriber.joint_state)
+        start_state = JointState()
+        start_state.header = joint_state_subscriber.joint_state.header
+        start_state.name = joint_state_subscriber.joint_state.name[2:6]
+        start_state.position = joint_state_subscriber.joint_state.position[2:6]
+        start_state.velocity = joint_state_subscriber.joint_state.velocity[2:6]
+
+        end_state = JointState()
+        end_state.header = joint_state_subscriber.joint_state.header
+        end_state.name = joint_state_subscriber.joint_state.name[2:6]
+        end_state.position = [0, 0, 0, 0]
+        end_state.velocity = [0, 0, 0, 0]
+
+        trajectory_home = plan_kinematic_path(start_state, end_state)
+
+        goal_arm.header.stamp = rospy.Time.now()
+        goal_arm.goal_id.stamp = rospy.Time.now()
+        goal_arm.goal_id.id = f"turtlebot_teleoperation_arm-{goal_arm.goal_id.stamp.secs}.{goal_arm.goal_id.stamp.nsecs}"
+        goal_arm.goal.trajectory = trajectory_home
+
+        arm_publisher.publish(goal_arm)
+
+        # fiks at home på startup ikke virker
+        # dette fikser også initialisering av referansepunktet
+        # legg til timer i inputlesning
+        # tuning
+
+
+
+        reference_position = compute_fk(end_state)
         reference_position.y = 0
 
         reference_position_backup = Point()
         reference_position_backup.x = 0
         reference_position_backup.y = 0
         reference_position_backup.z = 0
+
+        joint_state_ik_backup = JointState()
         
-        reference_angle = joint_state_subscriber.joint_state.position[2]
+        reference_angle = 0
 
-        reference_velocity = Point()
-        reference_velocity.x = 0
-        reference_velocity.y = 0
-        reference_velocity.z = 0
-
-        joint_state_ik = compute_ik(joint_state_subscriber.joint_state, reference_position)
+        #joint_state_ik = compute_ik(joint_state_subscriber.joint_state, reference_position)
+        joint_state_ik = JointState()
+        joint_state_ik.header = joint_state_subscriber.joint_state.header
+        joint_state_ik.name = joint_state_subscriber.joint_state.name[2:6]
+        joint_state_ik.position = [0, 0, 0, 0]
+        joint_state_ik.velocity = [0, 0, 0, 0]
 
         print("Computed initial position")
 
@@ -329,8 +354,6 @@ def main():
         rate = rospy.Rate(100) # 100hz
 
         active_keys_prev = active_keys
-
-        previous_goal_id = GoalID()
         
         while not rospy.is_shutdown():
 
@@ -362,64 +385,90 @@ def main():
 
             wheel_publisher.publish(wheels_twist)
 
-            if active_keys["l"] or active_keys["j"] and not active_keys_prev["j"] or active_keys["i"] and not active_keys_prev["i"] or active_keys["k"] and not active_keys_prev["k"] or active_keys["o"] and not active_keys_prev["o"] or active_keys["u"] and not active_keys_prev["u"]:
-                try:
-                    if active_keys["l"] and not active_keys["j"] and reference_angle > -3:
-                        reference_angle -= 0.1
-                    elif active_keys["j"] and not active_keys["l"] and reference_angle < 3:
-                        reference_angle += 0.1
+            arm_rotate = False
+            arm_translate = False
 
+            if active_keys["l"] and not active_keys_prev["l"] and not active_keys["j"] and reference_angle > -3:
+                reference_angle -= 0.1
+                arm_rotate = True
+            elif active_keys["j"] and not active_keys_prev["j"] and not active_keys["l"] and reference_angle < 3:
+                reference_angle += 0.1
+                arm_rotate = True
+            elif joy_subscriber.axes[3] != 0:
+                reference_angle -= 0.1 * joy_subscriber.axes[3]
+                arm_rotate = True
+
+            if active_keys["i"] and not active_keys_prev["i"] and not active_keys["k"]:
+                reference_position.x += 0.01
+                arm_translate = True
+            elif active_keys["k"] and not active_keys_prev["k"] and not active_keys["i"]:
+                reference_position.x -= 0.01
+                arm_translate = True
+            elif joy_subscriber.axes[4] != 0:
+                reference_position.x += 0.1 * joy_subscriber.axes[4]
+                arm_translate = True
+
+            if active_keys["o"] and not active_keys_prev["o"] and not active_keys["u"]:
+                reference_position.z += 0.01
+                arm_translate = True
+            elif active_keys["u"] and not active_keys_prev["u"] and not active_keys["o"]:
+                reference_position.z -= 0.01
+                arm_translate = True
+            elif joy_subscriber.axes[2] - joy_subscriber.axes[5] != 0:
+                reference_position.z += 0.001 * (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2
+                arm_translate = True
+
+            
+            if arm_translate:
+                try:
                     reference_position_backup.x = reference_position.x
                     reference_position_backup.z = reference_position.z
 
-                    if active_keys["i"] and not active_keys["k"]:
-                        reference_position.x += 0.01
-                    elif active_keys["k"] and not active_keys["i"]:
-                        reference_position.x -= 0.01
-                    
-                    if active_keys["o"] and not active_keys["u"]:
-                        reference_position.z += 0.01
-                    elif active_keys["u"] and not active_keys["o"]:
-                        reference_position.z -= 0.01
-                    
+                    joint_state_ik_backup.header = joint_state_ik.header
+                    joint_state_ik_backup.name = joint_state_ik.name
+                    joint_state_ik_backup.position = joint_state_ik.position
+                    joint_state_ik_backup.velocity = joint_state_ik.velocity
+
                     joint_state_ik = compute_ik(joint_state_subscriber.joint_state, reference_position)
 
                     # No solution
                     # Revert the changes to the reference position to unstuck it
                     # Then escape the try block by raising an exception
                     if len(joint_state_ik.position) == 0:
-                        reference_position.x -= reference_velocity.x
-                        reference_position.z -= reference_velocity.z
                         raise IndexError
-
-                    trajectory_arm.points[0].positions = joint_state_subscriber.joint_state.position[2:6]
-                    trajectory_arm.points[0].velocities = joint_state_subscriber.joint_state.velocity[2:6]
-
-                    end_positions = [reference_angle] + list(joint_state_ik.position[1:4])
-
-                    arm_time = 0.1
-                    arm_motion_plan_duration = abs(reference_angle - joint_state_subscriber.joint_state.position[2]) / arm_trajectory_points * arm_time
-
-                    for i in range(1, arm_trajectory_points + 1):
-                        #trajectory_arm.points[i].positions = end_positions
-                        trajectory_arm.points[i].positions = [0, 0, 0, 0]
-                        for j in range(4):
-                            trajectory_arm.points[i].positions[j] = end_positions[j] * (i - 1) / (arm_trajectory_points - 1) + joint_state_subscriber.joint_state.position[j + 2] * (arm_trajectory_points - i) / (arm_trajectory_points - 1)
-                        trajectory_arm.points[i].velocities = [0, 0, 0, 0]
-                        trajectory_arm.points[i].velocities[0] = -i * (i - arm_trajectory_points)
-                        trajectory_arm.points[i].time_from_start = rospy.Duration(arm_motion_plan_duration * i)
-                    
-                    goal_arm.goal.trajectory = trajectory_arm
-                    goal_arm.header.stamp = rospy.Time.now()
-                    goal_arm.goal_id.stamp = rospy.Time.now()
-                    goal_arm.goal_id.id = f"turtlebot_teleoperation_arm-{goal_arm.goal_id.stamp.secs}.{goal_arm.goal_id.stamp.nsecs}"
-
-                    arm_publisher.publish(goal_arm)
                 
                 except IndexError:
                     reference_position = reference_position_backup
+                    joint_state_ik = joint_state_ik_backup
+                    arm_rotate = False
+                    arm_translate = False
+
+            if arm_rotate or arm_translate:
+                trajectory_arm.points[0].positions = joint_state_subscriber.joint_state.position[2:6]
+                trajectory_arm.points[0].velocities = joint_state_subscriber.joint_state.velocity[2:6]
+
+                end_positions = [reference_angle] + list(joint_state_ik.position[1:4])
+
+                arm_time = 0.1
+                arm_motion_plan_duration = abs(reference_angle - joint_state_subscriber.joint_state.position[2]) / arm_trajectory_points * arm_time
+
+                for i in range(1, arm_trajectory_points + 1):
+                    #trajectory_arm.points[i].positions = end_positions
+                    trajectory_arm.points[i].positions = [0, 0, 0, 0]
+                    for j in range(4):
+                        trajectory_arm.points[i].positions[j] = end_positions[j] * (i - 1) / (arm_trajectory_points - 1) + joint_state_subscriber.joint_state.position[j + 2] * (arm_trajectory_points - i) / (arm_trajectory_points - 1)
+                    trajectory_arm.points[i].velocities = [0, 0, 0, 0]
+                    trajectory_arm.points[i].velocities[0] = -i * (i - arm_trajectory_points)
+                    trajectory_arm.points[i].time_from_start = rospy.Duration(arm_motion_plan_duration * i)
+                
+                goal_arm.goal.trajectory = trajectory_arm
+                goal_arm.header.stamp = rospy.Time.now()
+                goal_arm.goal_id.stamp = rospy.Time.now()
+                goal_arm.goal_id.id = f"turtlebot_teleoperation_arm-{goal_arm.goal_id.stamp.secs}.{goal_arm.goal_id.stamp.nsecs}"
+
+                arm_publisher.publish(goal_arm)
             
-            elif active_keys["h"] and not active_keys_prev["h"]:
+            if active_keys["h"] and not active_keys_prev["h"]:
                 start_state = JointState()
                 start_state.header = joint_state_subscriber.joint_state.header
                 start_state.name = joint_state_subscriber.joint_state.name[2:6]
