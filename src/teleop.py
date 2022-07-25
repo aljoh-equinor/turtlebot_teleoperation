@@ -215,8 +215,8 @@ def main():
 
         time_previous = rospy.Time.now()
 
-        arm_publisher = rospy.Publisher("arm_controller/follow_joint_trajectory/goal", FollowJointTrajectoryActionGoal, queue_size=10)
-        gripper_publisher = rospy.Publisher("gripper_controller/follow_joint_trajectory/goal", FollowJointTrajectoryActionGoal, queue_size=10)
+        arm_publisher = rospy.Publisher("joint_trajectory_point", Float64MultiArray, queue_size=10)
+        gripper_publisher = rospy.Publisher("gripper_position", Float64MultiArray, queue_size=10)
         wheel_publisher = rospy.Publisher("cmd_vel", Twist, queue_size=10)
 
         compute_fk = ComputeFK()
@@ -247,28 +247,8 @@ def main():
 
         wheels_linear_speed = 20
         wheels_angular_speed = 20
-
-        trajectory_arm = JointTrajectory()
-        trajectory_arm.header.frame_id = "base_footprint"
-        trajectory_arm.joint_names = [f"joint{i}" for i in range(1, 5)]
-        trajectory_arm.points = []
-
-        for i in range(arm_trajectory_points + 1):
-            point = JointTrajectoryPoint()
-            point.accelerations = [0 for _ in range(4)]
-            point.time_from_start = rospy.Duration(arm_motion_plan_duration * i)
-            trajectory_arm.points.append(point)
-
-        goal_arm = FollowJointTrajectoryActionGoal()
-        #goal_arm.goal.trajectory = trajectory_arm
-        """goal_arm.goal.goal_time_tolerance = rospy.Duration(5)
-        for i in range(4):
-            goal_arm.goal.goal_tolerance.append(JointTolerance())
-            goal_arm.goal.goal_tolerance[i].name = "joint" + str(i + 1)
-            goal_arm.goal.goal_tolerance[i].position = 6
-            goal_arm.goal.goal_tolerance[i].velocity = 6
-            goal_arm.goal.goal_tolerance[i].acceleration = 6"""
         
+
 
         start_state = JointState()
         start_state.header = joint_state_subscriber.joint_state.header
@@ -284,15 +264,13 @@ def main():
 
         trajectory_home = plan_kinematic_path(start_state, end_state)
 
-        goal_arm.header.stamp = rospy.Time.now()
-        goal_arm.goal_id.stamp = rospy.Time.now()
-        goal_arm.goal_id.id = f"turtlebot_teleoperation_arm-{goal_arm.goal_id.stamp.secs}.{goal_arm.goal_id.stamp.nsecs}"
-        goal_arm.goal.trajectory = trajectory_home
+        goal_arm = Float64MultiArray()
+        for point in trajectory_home.points:
+            time_from_start = float(point.time_from_start.secs) + float(point.time_from_start.nsecs) / 1e9
+            goal_arm.data.extend([time_from_start, *point.positions])
 
         arm_publisher.publish(goal_arm)
 
-        # fiks at home på startup ikke virker
-        # dette fikser også initialisering av referansepunktet
         # legg til timer i inputlesning
         # tuning
 
@@ -333,23 +311,12 @@ def main():
         wheels_twist.angular.y = 0
         wheels_twist.angular.z = 0
 
-
-        start_point_gripper = JointTrajectoryPoint()
-        start_point_gripper.accelerations = [0]
-        start_point_gripper.time_from_start = rospy.Duration(0)
         
-        end_point_gripper = JointTrajectoryPoint()
-        end_point_gripper.velocities = [0]
-        end_point_gripper.accelerations = [0]
-        end_point_gripper.time_from_start = rospy.Duration(gripper_motion_plan_duration)
+        
+        goal_arm = Float64MultiArray()
+        goal_gripper = Float64MultiArray()
 
-        trajectory_gripper = JointTrajectory()
-        trajectory_gripper.header.frame_id = "base_footprint"
-        trajectory_gripper.joint_names = ["gripper"]
-        trajectory_gripper.points = [start_point_gripper, end_point_gripper]
 
-        goal_gripper = FollowJointTrajectoryActionGoal()
-        goal_gripper.goal.trajectory = trajectory_gripper
 
         rate = rospy.Rate(100) # 100hz
 
@@ -444,28 +411,18 @@ def main():
                     arm_translate = False
 
             if arm_rotate or arm_translate:
-                trajectory_arm.points[0].positions = joint_state_subscriber.joint_state.position[2:6]
-                trajectory_arm.points[0].velocities = joint_state_subscriber.joint_state.velocity[2:6]
-
                 end_positions = [reference_angle] + list(joint_state_ik.position[1:4])
-
+                
                 arm_time = 0.1
                 arm_motion_plan_duration = abs(reference_angle - joint_state_subscriber.joint_state.position[2]) / arm_trajectory_points * arm_time
 
-                for i in range(1, arm_trajectory_points + 1):
-                    #trajectory_arm.points[i].positions = end_positions
-                    trajectory_arm.points[i].positions = [0, 0, 0, 0]
-                    for j in range(4):
-                        trajectory_arm.points[i].positions[j] = end_positions[j] * (i - 1) / (arm_trajectory_points - 1) + joint_state_subscriber.joint_state.position[j + 2] * (arm_trajectory_points - i) / (arm_trajectory_points - 1)
-                    trajectory_arm.points[i].velocities = [0, 0, 0, 0]
-                    trajectory_arm.points[i].velocities[0] = -i * (i - arm_trajectory_points)
-                    trajectory_arm.points[i].time_from_start = rospy.Duration(arm_motion_plan_duration * i)
-                
-                goal_arm.goal.trajectory = trajectory_arm
-                goal_arm.header.stamp = rospy.Time.now()
-                goal_arm.goal_id.stamp = rospy.Time.now()
-                goal_arm.goal_id.id = f"turtlebot_teleoperation_arm-{goal_arm.goal_id.stamp.secs}.{goal_arm.goal_id.stamp.nsecs}"
+                goal_arm.data = [0, *joint_state_subscriber.joint_state.position[2:6]]
 
+                for i in range(1, arm_trajectory_points + 1):
+                    goal_arm.data.append(arm_motion_plan_duration * i)
+                    for j in range(4):
+                        goal_arm.data.append(end_positions[j] * (i - 1) / (arm_trajectory_points - 1) + joint_state_subscriber.joint_state.position[j + 2] * (arm_trajectory_points - i) / (arm_trajectory_points - 1))
+                    
                 arm_publisher.publish(goal_arm)
             
             if active_keys["h"] and not active_keys_prev["h"]:
@@ -483,10 +440,10 @@ def main():
 
                 trajectory_home = plan_kinematic_path(start_state, end_state)
 
-                goal_arm.header.stamp = rospy.Time.now()
-                goal_arm.goal_id.stamp = rospy.Time.now()
-                goal_arm.goal_id.id = f"turtlebot_teleoperation_arm-{goal_arm.goal_id.stamp.secs}.{goal_arm.goal_id.stamp.nsecs}"
-                goal_arm.goal.trajectory = trajectory_home
+                goal_arm.data = []
+                for point in trajectory_home.points:
+                    time_from_start = float(point.time_from_start.secs) + float(point.time_from_start.nsecs) / 1e9
+                    goal_arm.data.extend([time_from_start, *point.positions])
 
                 arm_publisher.publish(goal_arm)
 
@@ -502,24 +459,12 @@ def main():
                 gripper_action = - 1
             
             if gripper_action:
-                try:
-                    goal_gripper.goal.trajectory.points[0].positions = [joint_state_subscriber.joint_state.position[6]]
-                    goal_gripper.goal.trajectory.points[0].velocities = [joint_state_subscriber.joint_state.velocity[6]]
+                gripper_end = joint_state_subscriber.joint_state.position[6] + gripper_action * gripper_speed
+                if gripper_end < 0.024:
+                    gripper_end = 0.024
 
-                    gripper_end = joint_state_subscriber.joint_state.position[6] + gripper_action * gripper_speed
-                    if gripper_end < 0.024:
-                        gripper_end = 0.024
-
-                    goal_gripper.goal.trajectory.points[1].positions = [gripper_end]
-
-                    goal_gripper.header.stamp = rospy.Time.now()
-                    goal_gripper.goal_id.stamp = rospy.Time.now()
-                    goal_gripper.goal_id.id = f"turtlebot_teleoperation_gripper-{goal_gripper.goal_id.stamp.secs}.{goal_gripper.goal_id.stamp.nsecs}"
-                    
-                    gripper_publisher.publish(goal_gripper)
-                
-                except IndexError:
-                    pass
+                goal_gripper.data = [gripper_end]
+                gripper_publisher.publish(goal_gripper)
             
             active_keys_prev = active_keys.copy()
         
