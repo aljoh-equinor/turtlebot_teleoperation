@@ -233,6 +233,7 @@ def main():
 
         # Wait until a joint_state message is received
         # Necessary to compute the reference_position
+        # not (len(joint_state_subscriber.joint_state.position[2:6]) == 4)
         while not joint_state_subscriber.joint_state.position and not rospy.is_shutdown():
             pass
 
@@ -247,39 +248,39 @@ def main():
         trajectory_home = plan_kinematic_path(joint_state_subscriber.get_current_state(), home_state)
 
         trajectory_home_length = len(trajectory_home.points)
-        trajectory_home_index = 0
+
+        rate = rospy.Rate(100) # 100hz
 
         print("Started home trajectory")
-        while trajectory_home_index < np.ceil(trajectory_home_length / 20):
+        for trajectory_home_index in range(int(np.ceil(trajectory_home_length / 20))):
+        #while trajectory_home_index < np.ceil(trajectory_home_length / 20):
 
             goal_arm = Float64MultiArray()
 
             start_index = 20 * trajectory_home_index
             end_index = 20 * (trajectory_home_index + 1)
+
             if end_index > trajectory_home_length - 1:
                 end_index = trajectory_home_length - 1
 
             start_time = trajectory_home.points[start_index].time_from_start.to_sec()
+
             for point in trajectory_home.points[start_index:end_index + 1]:
                 goal_arm.data.extend([point.time_from_start.to_sec() - start_time, *point.positions])
 
             arm_publisher.publish(goal_arm)
-
             end_point = np.array(trajectory_home.points[end_index].positions)
-            while np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6]) - end_point)) > 0.2:
-                pass
-            
-            trajectory_home_index += 1
+            start_time = rospy.Time.now().to_sec()
+
+            while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > 0.2) and (rospy.Time.now().to_sec() - start_time < 2):
+                rate.sleep()
         
         """goal_home = FollowJointTrajectoryActionGoal()
         goal_home.header.stamp = rospy.Time.now()
         goal_home.goal_id.stamp = goal_home.header.stamp
         goal_home.goal_id.id = f"/turtlebot_teleop-1-{goal_home.header.stamp.secs}.{goal_home.header.stamp.nsecs}"
         goal_home.goal.trajectory = trajectory_home
-
         home_publisher.publish(goal_home)
-
-
         goal_arm = Float64MultiArray()"""
 
 
@@ -315,8 +316,6 @@ def main():
 
         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         listener.start()
-
-        rate = rospy.Rate(100) # 100hz
 
         print("Ready")
         
@@ -438,10 +437,11 @@ def main():
                     print("No path found to home")
                     continue
 
-                trajectory_home_index = 0
+                trajectory_home_length = len(trajectory_home.points)
 
                 print("Started home trajectory")
-                while trajectory_home_index < np.ceil(trajectory_home_length / 20):
+                for trajectory_home_index in range(int(np.ceil(trajectory_home_length / 20))):
+                #while trajectory_home_index < np.ceil(trajectory_home_length / 20):
 
                     goal_arm = Float64MultiArray()
 
@@ -450,27 +450,23 @@ def main():
                     if end_index > trajectory_home_length - 1:
                         end_index = trajectory_home_length - 1
 
+                    print(start_index, end_index)
+
+
                     start_time = trajectory_home.points[start_index].time_from_start.to_sec()
                     for point in trajectory_home.points[start_index:end_index + 1]:
                         goal_arm.data.extend([point.time_from_start.to_sec() - start_time, *point.positions])
 
                     arm_publisher.publish(goal_arm)
+                    end_point = np.array(trajectory_home.points[end_index].positions)
                     
-                    break
 
                     start_time = rospy.Time.now().to_sec()
 
-                    end_point = np.array(trajectory_home.points[end_index].positions)
-                    while rospy.Time.now().to_sec() - start_time < 2:
-                        #print(joint_state_subscriber.joint_state.position[2:6])
-                        #print(end_point)
-                        #print(np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6]) - end_point)))
-                        #print()
-                        pass
-
-                    
-                    trajectory_home_index += 1
-
+                    while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > 0.2) and (rospy.Time.now().to_sec() - start_time < 2):
+                        rate.sleep()
+                print("done")
+                
                 reference_position = compute_fk(home_state)
                 reference_position.y = 0
                 reference_angle = 0
