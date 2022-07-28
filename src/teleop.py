@@ -249,8 +249,9 @@ def main():
 
         goal_arm = Float64MultiArray()
 
-        max_home_attempts = 3
+        max_home_attempts = 5
         home_attempt_counter = 0
+        home_timeout = 1
 
         print("Started home trajectory")
         while np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6]))) > 0.2 and home_attempt_counter < max_home_attempts:
@@ -274,7 +275,7 @@ def main():
                 end_point = np.array(trajectory_home.points[end_index].positions)
                 start_time = rospy.Time.now().to_sec()
 
-                while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > 0.2) and (rospy.Time.now().to_sec() - start_time < 2):
+                while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > 0.2) and (rospy.Time.now().to_sec() - start_time < home_timeout):
                     rate.sleep()
             
             rate.sleep()
@@ -455,7 +456,7 @@ def main():
                         end_point = np.array(trajectory_home.points[end_index].positions)
                         start_time = rospy.Time.now().to_sec()
 
-                        while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > 0.2) and (rospy.Time.now().to_sec() - start_time < 2):
+                        while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > 0.2) and (rospy.Time.now().to_sec() - start_time < home_timeout):
                             rate.sleep()
                     
                     rate.sleep()
@@ -466,8 +467,8 @@ def main():
                 reference_position = compute_fk(home_state)
                 reference_position.y = 0
                 reference_angle = 0
-            
-            #print(reference_position.x, reference_angle, reference_position.z)
+                
+                joint_state_ik = compute_ik(joint_state_subscriber.joint_state, reference_position)
 
 
             gripper_action = None
