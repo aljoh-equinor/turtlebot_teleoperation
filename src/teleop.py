@@ -231,11 +231,13 @@ def main():
         joy_subscriber = JoySubscriber()
         teleop_subscriber = TeleopSubscriber()
 
+        rate = rospy.Rate(100) # 100hz
+
         # Wait until a joint_state message is received
         # Necessary to compute the reference_position
         # not (len(joint_state_subscriber.joint_state.position[2:6]) == 4)
         while not joint_state_subscriber.joint_state.position and not rospy.is_shutdown():
-            pass
+            rate.sleep()
 
         print("Read initial joint state")
 
@@ -245,43 +247,39 @@ def main():
         home_state.position = [0, 0, 0, 0]
         home_state.velocity = [0, 0, 0, 0]
 
-        trajectory_home = plan_kinematic_path(joint_state_subscriber.get_current_state(), home_state)
+        goal_arm = Float64MultiArray()
 
-        trajectory_home_length = len(trajectory_home.points)
-
-        rate = rospy.Rate(100) # 100hz
+        max_home_attempts = 3
+        home_attempt_counter = 0
 
         print("Started home trajectory")
-        for trajectory_home_index in range(int(np.ceil(trajectory_home_length / 20))):
-        #while trajectory_home_index < np.ceil(trajectory_home_length / 20):
+        while np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6]))) > 0.2 and home_attempt_counter < max_home_attempts:
+            trajectory_home = plan_kinematic_path(joint_state_subscriber.get_current_state(), home_state)
+            trajectory_home_length = len(trajectory_home.points)
 
-            goal_arm = Float64MultiArray()
+            for trajectory_home_index in range(int(np.ceil(trajectory_home_length / 20))):
+                start_index = 20 * trajectory_home_index
+                end_index = 20 * (trajectory_home_index + 1)
 
-            start_index = 20 * trajectory_home_index
-            end_index = 20 * (trajectory_home_index + 1)
+                if end_index > trajectory_home_length - 1:
+                    end_index = trajectory_home_length - 1
 
-            if end_index > trajectory_home_length - 1:
-                end_index = trajectory_home_length - 1
+                start_time = trajectory_home.points[start_index].time_from_start.to_sec()
 
-            start_time = trajectory_home.points[start_index].time_from_start.to_sec()
+                goal_arm.data = []
+                for point in trajectory_home.points[start_index:end_index + 1]:
+                    goal_arm.data.extend([point.time_from_start.to_sec() - start_time, *point.positions])
 
-            for point in trajectory_home.points[start_index:end_index + 1]:
-                goal_arm.data.extend([point.time_from_start.to_sec() - start_time, *point.positions])
+                arm_publisher.publish(goal_arm)
+                end_point = np.array(trajectory_home.points[end_index].positions)
+                start_time = rospy.Time.now().to_sec()
 
-            arm_publisher.publish(goal_arm)
-            end_point = np.array(trajectory_home.points[end_index].positions)
-            start_time = rospy.Time.now().to_sec()
-
-            while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > 0.2) and (rospy.Time.now().to_sec() - start_time < 2):
-                rate.sleep()
+                while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > 0.2) and (rospy.Time.now().to_sec() - start_time < 2):
+                    rate.sleep()
+            
+            rate.sleep()
+            home_attempt_counter += 1
         
-        """goal_home = FollowJointTrajectoryActionGoal()
-        goal_home.header.stamp = rospy.Time.now()
-        goal_home.goal_id.stamp = goal_home.header.stamp
-        goal_home.goal_id.id = f"/turtlebot_teleop-1-{goal_home.header.stamp.secs}.{goal_home.header.stamp.nsecs}"
-        goal_home.goal.trajectory = trajectory_home
-        home_publisher.publish(goal_home)
-        goal_arm = Float64MultiArray()"""
 
 
         reference_position = compute_fk(home_state)
@@ -427,45 +425,43 @@ def main():
             
 
             if active_keys["h"] or joy_subscriber.buttons[3] == 1:
-                #active_keys["h"] = False
-                #joy_subscriber.buttons[3] = 0
-
-                trajectory_home = plan_kinematic_path(joint_state_subscriber.get_current_state(), home_state)
-
-                trajectory_home_length = len(trajectory_home.points)
-                if trajectory_home_length == 0:
-                    print("No path found to home")
-                    continue
-
-                trajectory_home_length = len(trajectory_home.points)
-
                 print("Started home trajectory")
-                for trajectory_home_index in range(int(np.ceil(trajectory_home_length / 20))):
-                #while trajectory_home_index < np.ceil(trajectory_home_length / 20):
+                
+                home_attempt_counter = 0
+                while np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6]))) > 0.2 and home_attempt_counter < max_home_attempts:
+                    trajectory_home = plan_kinematic_path(joint_state_subscriber.get_current_state(), home_state)
+                    trajectory_home_length = len(trajectory_home.points)
 
-                    goal_arm = Float64MultiArray()
+                    if trajectory_home_length == 0:
+                        print("No home path found")
+                        active_keys["h"] = False
+                        joy_subscriber.buttons[3] = 0
+                        break
 
-                    start_index = 20 * trajectory_home_index
-                    end_index = 20 * (trajectory_home_index + 1)
-                    if end_index > trajectory_home_length - 1:
-                        end_index = trajectory_home_length - 1
+                    for trajectory_home_index in range(int(np.ceil(trajectory_home_length / 20))):
+                        start_index = 20 * trajectory_home_index
+                        end_index = 20 * (trajectory_home_index + 1)
 
-                    print(start_index, end_index)
+                        if end_index > trajectory_home_length - 1:
+                            end_index = trajectory_home_length - 1
 
+                        start_time = trajectory_home.points[start_index].time_from_start.to_sec()
+                        
+                        goal_arm.data = []
+                        for point in trajectory_home.points[start_index:end_index + 1]:
+                            goal_arm.data.extend([point.time_from_start.to_sec() - start_time, *point.positions])
 
-                    start_time = trajectory_home.points[start_index].time_from_start.to_sec()
-                    for point in trajectory_home.points[start_index:end_index + 1]:
-                        goal_arm.data.extend([point.time_from_start.to_sec() - start_time, *point.positions])
+                        arm_publisher.publish(goal_arm)
+                        end_point = np.array(trajectory_home.points[end_index].positions)
+                        start_time = rospy.Time.now().to_sec()
 
-                    arm_publisher.publish(goal_arm)
-                    end_point = np.array(trajectory_home.points[end_index].positions)
+                        while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > 0.2) and (rospy.Time.now().to_sec() - start_time < 2):
+                            rate.sleep()
                     
-
-                    start_time = rospy.Time.now().to_sec()
-
-                    while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > 0.2) and (rospy.Time.now().to_sec() - start_time < 2):
-                        rate.sleep()
-                print("done")
+                    rate.sleep()
+                    home_attempt_counter += 1
+                
+                print("Ready")
                 
                 reference_position = compute_fk(home_state)
                 reference_position.y = 0
