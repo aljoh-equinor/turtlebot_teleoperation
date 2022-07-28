@@ -281,6 +281,7 @@ def main():
         print("Read initial joint state")
 
         home_state_position = [0, 0, 0, 0]
+        throw_state_position = [0, -np.pi * 0.6, -np.pi * 0.5, -np.pi * 0.5]
         pickup_state_position = [0, np.pi * 0.36, -np.pi * 0.4, np.pi * 0.3]
 
         print("Started home trajectory")
@@ -324,12 +325,12 @@ def main():
         while not rospy.is_shutdown():
             rate.sleep()
 
-            if not teleop_subscriber.activated:
+            """if not teleop_subscriber.activated:
                 continue
 
             if active_keys["enter"] or joy_subscriber.buttons[7] == 1:
                 teleop_subscriber.stop()
-                continue
+                continue"""
 
 
             speed_modifier = 1
@@ -503,6 +504,47 @@ def main():
                     rate.sleep()
 
                 goto(home_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
+
+                print("Ready")
+            
+
+            # Throw object
+            if active_keys["t"] or joy_subscriber.buttons[2] == 1: # TODO: xbox button
+                print("Started throw")
+
+                active_keys["v"] = False
+                joy_subscriber.buttons[2] = 0
+
+                goal_gripper.data = [-1]
+                gripper_publisher.publish(goal_gripper)
+
+                goto(home_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
+
+                goto(throw_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
+
+                goal_arm = Float64MultiArray()
+                for i in range(20):
+                    goal_arm.data.extend([0.1 * (i + 1), *pickup_state_position])
+                arm_publisher.publish(goal_arm)
+
+                start_time = rospy.Time.now().to_sec()
+                while rospy.Time.now().to_sec() - start_time < 0.7:
+                    rate.sleep()
+
+                goal_gripper.data = [gripper_max]
+                gripper_publisher.publish(goal_gripper)
+
+                start_time = rospy.Time.now().to_sec()
+                while rospy.Time.now().to_sec() - start_time < 2:
+                    rate.sleep()
+
+                goal_arm.data = [0, *pickup_state_position]
+                for i in range(1, arm_trajectory_points + 1):
+                    goal_arm.data.append(arm_motion_plan_duration * i)
+                    for j in range(4):
+                        goal_arm.data.append(home_state_position[j] * (i - 1) / (arm_trajectory_points - 1) + joint_state_subscriber.joint_state.position[j + 2] * (arm_trajectory_points - i) / (arm_trajectory_points - 1))
+                    
+                arm_publisher.publish(goal_arm)
 
                 print("Ready")
 
