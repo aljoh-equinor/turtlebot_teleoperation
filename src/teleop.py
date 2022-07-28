@@ -55,7 +55,7 @@ class JoySubscriber:
         self.buttons = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     
     def update(self, joy):
-        self.buttons = joy.buttons
+        self.buttons = list(joy.buttons)
 
         for i in range(len(self.axes)):
             if joy.axes[i] > 0 and joy.axes[i] < 0.2:
@@ -184,6 +184,9 @@ def on_press(key):
     if key == keyboard.Key.shift:
         active_keys["shift"] = True
         return
+    elif key == keyboard.Key.enter:
+        active_keys["enter"] = True
+        return
     try:
         active_keys[key.char] = True
     except AttributeError:
@@ -193,10 +196,46 @@ def on_release(key):
     if key == keyboard.Key.shift:
         active_keys["shift"] = False
         return
+    elif key == keyboard.Key.enter:
+        active_keys["enter"] = False
+        return
     try:
         active_keys[key.char] = False
     except AttributeError:
         pass
+
+
+def goto(joint_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate, goto_attempt_counter=0, max_goto_attempts=10, goto_timeout=2, goto_offset=0.1, trajectory_points=20):
+    joint_state = JointState()
+    joint_state.header = joint_state_subscriber.joint_state.header
+    joint_state.name = joint_state_subscriber.joint_state.name[2:6]
+    joint_state.position = joint_state_position
+    joint_state.velocity = [0, 0, 0, 0]
+
+    while np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6]) - np.array(joint_state_position))) > goto_offset and goto_attempt_counter < max_goto_attempts:
+        trajectory = plan_kinematic_path(joint_state_subscriber.get_current_state(), joint_state)
+        trajectory_home_length = len(trajectory.points)
+
+        if trajectory_home_length == 0:
+            print("No path found")
+            return
+
+        end_index = min(trajectory_points, trajectory_home_length - 1)
+
+        goal_arm = Float64MultiArray()
+        for point in trajectory.points[:end_index + 1]:
+            goal_arm.data.extend([point.time_from_start.to_sec(), *point.positions])
+
+        arm_publisher.publish(goal_arm)
+
+        end_point = np.array(trajectory.points[end_index].positions)
+
+        start_time = rospy.Time.now().to_sec()
+        while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > goto_offset) and (rospy.Time.now().to_sec() - start_time < goto_timeout):
+            rate.sleep()
+        
+        goto_attempt_counter += 1
+
 
 def main():
 
@@ -210,8 +249,8 @@ def main():
     gripper_speed = 0.01
     gripper_max = 0.017
     
-    wheels_linear_speed = 10
-    wheels_angular_speed = 10
+    wheels_linear_speed = 5
+    wheels_angular_speed = 5
 
     print("Starting")
 
@@ -241,53 +280,25 @@ def main():
 
         print("Read initial joint state")
 
-        home_state = JointState()
-        home_state.header = joint_state_subscriber.joint_state.header
-        home_state.name = joint_state_subscriber.joint_state.name[2:6]
-        home_state.position = [0, 0, 0, 0]
-        home_state.velocity = [0, 0, 0, 0]
-
-        goal_arm = Float64MultiArray()
-
-        home_attempt_counter = 0
-        max_home_attempts = 10
-        home_timeout = 2
-        home_offset = 0.2
+        home_state_position = [0, 0, 0, 0]
+        pickup_state_position = [0, np.pi * 0.36, -np.pi * 0.4, np.pi * 0.3]
 
         print("Started home trajectory")
-        while np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6]))) > home_offset and home_attempt_counter < max_home_attempts:
-            trajectory_home = plan_kinematic_path(joint_state_subscriber.get_current_state(), home_state)
-            trajectory_home_length = len(trajectory_home.points)
+        goto(home_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
 
-            end_index = min(20, trajectory_home_length - 1)
+        joint_state_ik = JointState()
+        joint_state_ik.header = joint_state_subscriber.joint_state.header
+        joint_state_ik.name = joint_state_subscriber.joint_state.name[2:6]
+        joint_state_ik.position = home_state_position
+        joint_state_ik.velocity = [0, 0, 0, 0]
 
-            goal_arm.data = []
-            for point in trajectory_home.points[:end_index + 1]:
-                goal_arm.data.extend([point.time_from_start.to_sec(), *point.positions])
-
-            arm_publisher.publish(goal_arm)
-
-            end_point = np.array(trajectory_home.points[end_index].positions)
-
-            start_time = rospy.Time.now().to_sec()
-            while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > home_offset) and (rospy.Time.now().to_sec() - start_time < home_timeout):
-                rate.sleep()
-            
-            home_attempt_counter += 1
-
-        reference_position = compute_fk(home_state)
+        reference_position = compute_fk(joint_state_ik)
         reference_position.y = 0
 
         reference_angle = 0
 
         reference_position_backup_x = 0
         reference_position_backup_z = 0
-
-        joint_state_ik = JointState()
-        joint_state_ik.header = joint_state_subscriber.joint_state.header
-        joint_state_ik.name = joint_state_subscriber.joint_state.name[2:6]
-        joint_state_ik.position = [0, 0, 0, 0]
-        joint_state_ik.velocity = [0, 0, 0, 0]
 
         joint_state_ik_backup = JointState()
 
@@ -313,12 +324,12 @@ def main():
         while not rospy.is_shutdown():
             rate.sleep()
 
-            #if not teleop_subscriber.activated:
-            #    continue
+            if not teleop_subscriber.activated:
+                continue
 
-            #if joy_subscriber.buttons[7] == 1:
-            #    teleop_subscriber.stop()
-            #    continue
+            if active_keys["enter"] or joy_subscriber.buttons[7] == 1:
+                teleop_subscriber.stop()
+                continue
 
 
             speed_modifier = 1
@@ -356,7 +367,7 @@ def main():
                 reference_angle += arm_speed_y * speed_modifier
                 arm_rotate = True
             elif joy_subscriber.axes[3] != 0:
-                reference_angle += arm_speed_y / 2 * joy_subscriber.axes[3] * speed_modifier
+                reference_angle += arm_speed_y * joy_subscriber.axes[3] * speed_modifier
                 arm_rotate = True
 
 
@@ -370,7 +381,7 @@ def main():
                 reference_position.x -= arm_speed_x * speed_modifier
                 arm_translate = True
             elif joy_subscriber.axes[4] != 0:
-                reference_position.x += arm_speed_x / 2 * joy_subscriber.axes[4] * speed_modifier
+                reference_position.x += arm_speed_x * joy_subscriber.axes[4] * speed_modifier
                 arm_translate = True
 
             if active_keys["o"] and not active_keys["u"]:
@@ -380,10 +391,11 @@ def main():
                 reference_position.z -= arm_speed_z * speed_modifier
                 arm_translate = True
             elif joy_subscriber.axes[2] - joy_subscriber.axes[5] != 0:
-                reference_position.z += arm_speed_z / 2 * (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2 * speed_modifier
+                reference_position.z += arm_speed_z * (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2 * speed_modifier
                 arm_translate = True
 
             
+            # Only do IK if there was a translation
             if arm_translate:
                 joint_state_ik_backup.header = joint_state_ik.header
                 joint_state_ik_backup.name = joint_state_ik.name
@@ -404,6 +416,7 @@ def main():
 
 
             if arm_rotate or arm_translate:
+                goal_arm = Float64MultiArray()
                 goal_arm.data = [0, *joint_state_subscriber.joint_state.position[2:6]]
 
                 end_position = [reference_angle] + list(joint_state_ik.position[1:4])
@@ -417,45 +430,88 @@ def main():
                 arm_publisher.publish(goal_arm)
             
 
+            # Return to home position
             if active_keys["h"] or joy_subscriber.buttons[3] == 1:
                 print("Started home trajectory")
                 
-                home_attempt_counter = 0
-                while np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6]))) > home_offset and home_attempt_counter < max_home_attempts:
-                    trajectory_home = plan_kinematic_path(joint_state_subscriber.get_current_state(), home_state)
-                    trajectory_home_length = len(trajectory_home.points)
+                goto(home_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
 
-                    end_index = min(20, trajectory_home_length - 1)
+                joint_state_ik.position = home_state_position
+                joint_state_ik.velocity = [0, 0, 0, 0]
 
-                    goal_arm.data = []
-                    for point in trajectory_home.points[:end_index + 1]:
-                        goal_arm.data.extend([point.time_from_start.to_sec(), *point.positions])
-
-                    arm_publisher.publish(goal_arm)
-
-                    end_point = np.array(trajectory_home.points[end_index].positions)
-
-                    start_time = rospy.Time.now().to_sec()
-                    while (np.max(np.abs(np.array(joint_state_subscriber.joint_state.position[2:6] - end_point))) > home_offset) and (rospy.Time.now().to_sec() - start_time < home_timeout):
-                        rate.sleep()
-                    
-                    home_attempt_counter += 1
-                
-                print("Ready")
-                
-                reference_position = compute_fk(home_state)
+                reference_position = compute_fk(joint_state_ik)
                 reference_position.y = 0
+
                 reference_angle = 0
                 
-                joint_state_ik.position = [0, 0, 0, 0]
-                joint_state_ik.velocity = [0, 0, 0, 0]
+                print("Ready")
+            
+
+            # Pickup object
+            if active_keys["p"] or joy_subscriber.buttons[1] == 1:
+                print("Started pickup")
+
+                active_keys["p"] = False
+                joy_subscriber.buttons[1] = 0
+
+                goto(home_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
+                
+                goal_gripper.data = [gripper_max]
+                gripper_publisher.publish(goal_gripper)
+
+                goto(pickup_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
+
+                start_time = rospy.Time.now().to_sec()
+                while rospy.Time.now().to_sec() - start_time < 1:
+                    rate.sleep()
+
+                goal_gripper.data = [-1]
+                gripper_publisher.publish(goal_gripper)
+
+                start_time = rospy.Time.now().to_sec()
+                while rospy.Time.now().to_sec() - start_time < 1:
+                    rate.sleep()
+
+                goto(home_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
+
+                print("Ready")
+            
+
+            # Place object
+            if active_keys["v"] or joy_subscriber.buttons[2] == 1:
+                print("Started place")
+
+                active_keys["v"] = False
+                joy_subscriber.buttons[2] = 0
+
+                goto(home_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
+
+                goal_gripper.data = [-1]
+                gripper_publisher.publish(goal_gripper)
+
+                goto(pickup_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
+
+                start_time = rospy.Time.now().to_sec()
+                while rospy.Time.now().to_sec() - start_time < 1:
+                    rate.sleep()
+
+                goal_gripper.data = [gripper_max]
+                gripper_publisher.publish(goal_gripper)
+
+                start_time = rospy.Time.now().to_sec()
+                while rospy.Time.now().to_sec() - start_time < 1:
+                    rate.sleep()
+
+                goto(home_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
+
+                print("Ready")
 
 
             gripper_action = None
             
-            if active_keys["."] and not active_keys[","] or joy_subscriber.buttons[5] == 1 and joy_subscriber.buttons[4] == 0:
+            if active_keys["."] and not active_keys[","] or active_keys[":"] and not active_keys[";"] or joy_subscriber.buttons[5] == 1 and joy_subscriber.buttons[4] == 0:
                 gripper_action = -1
-            elif active_keys[","] and not active_keys["."] or joy_subscriber.buttons[4] == 1 and joy_subscriber.buttons[5] == 0:
+            elif active_keys[","] and not active_keys["."] or active_keys[";"] and not active_keys[":"] or joy_subscriber.buttons[4] == 1 and joy_subscriber.buttons[5] == 0:
                 gripper_action = 1
             
             if gripper_action:
