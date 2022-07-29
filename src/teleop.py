@@ -509,11 +509,11 @@ def main():
             
 
             # Throw object
-            if active_keys["t"] or joy_subscriber.buttons[2] == 1: # TODO: xbox button
+            if active_keys["t"] or joy_subscriber.buttons[6] == 1:
                 print("Started throw")
 
-                active_keys["v"] = False
-                joy_subscriber.buttons[2] = 0
+                active_keys["t"] = False
+                joy_subscriber.buttons[6] = 0
 
                 goal_gripper.data = [-1]
                 gripper_publisher.publish(goal_gripper)
