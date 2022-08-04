@@ -2,6 +2,7 @@
 
 import math
 import numpy as np
+import cv2
 
 from pynput import keyboard
 
@@ -9,11 +10,13 @@ from collections import defaultdict
 
 import rospy
 from std_msgs.msg import Header, Bool, Float64MultiArray
-from geometry_msgs.msg import Twist
-from sensor_msgs.msg import JointState, Joy
+from geometry_msgs.msg import Twist, PoseStamped
+from sensor_msgs.msg import JointState, Joy, Image, CompressedImage
 from control_msgs.msg import FollowJointTrajectoryActionGoal
 from moveit_msgs.msg import MotionPlanRequest, Constraints, JointConstraint, PositionIKRequest, RobotState
 from moveit_msgs.srv import GetPositionIK, GetMotionPlan, GetPositionFK
+from nav_msgs.msg import Odometry
+from cv_bridge import CvBridge
 
 
 class JointStateSubscriber:
@@ -82,6 +85,41 @@ class TeleopSubscriber:
         message = Bool()
         message.data = False
         self.publisher.publish(message)
+
+
+class CameraSubscriber:
+
+    def __init__(self):
+        #self.color_subscriber = rospy.Subscriber("/camera/color/image_raw", Image, self.update_color)
+        self.color_subscriber = rospy.Subscriber("/camera/color/image_raw/compressed", CompressedImage, self.update_color)
+        self.depth_subscriber = rospy.Subscriber("/camera/aligned_depth_to_color/image_raw", Image, self.update_depth)
+        #self.depth_subscriber = rospy.Subscriber("/camera/aligned_depth_to_color/image_raw/compressed", CompressedImage, self.update_depth)
+
+        self.bridge = CvBridge()
+
+        self.color = None
+        self.depth = None
+    
+    def update_color(self, message):
+        #self.color = self.bridge.imgmsg_to_cv2(message)
+        self.color = self.bridge.compressed_imgmsg_to_cv2(message)
+    
+    def update_depth(self, message):
+        self.depth = np.array(self.bridge.imgmsg_to_cv2(message), dtype=np.float32)
+        #self.depth = self.bridge.compressed_imgmsg_to_cv2(message)
+
+
+class OdomSubscriber:
+
+    def __init__(self):
+        self.subscriber = rospy.Subscriber("/odom", Odometry, self.update)
+
+        self.position = None
+        self.orientation = None
+    
+    def update(self, message):
+        self.position = message.pose.pose.position
+        self.orientation = message.pose.pose.orientation
 
 
 class ComputeFK:
@@ -258,34 +296,47 @@ def main():
         rospy.init_node("isar_turtlebot_teleoperation", anonymous=True)
 
         arm_publisher = rospy.Publisher("joint_trajectory_point", Float64MultiArray, queue_size=10)
-        home_publisher = rospy.Publisher("arm_controller/follow_joint_trajectory/goal", FollowJointTrajectoryActionGoal, queue_size=10)
         gripper_publisher = rospy.Publisher("gripper_position", Float64MultiArray, queue_size=10)
         wheel_publisher = rospy.Publisher("cmd_vel", Twist, queue_size=10)
+        pose_publisher = rospy.Publisher("move_base_simple/goal", PoseStamped, queue_size=10)
 
-        compute_fk = ComputeFK()
-        compute_ik = ComputeIK()
-        plan_kinematic_path = PlanKinematicPath()
+        #compute_fk = ComputeFK()
+        #compute_ik = ComputeIK()
+        #plan_kinematic_path = PlanKinematicPath()
     
         joint_state_subscriber = JointStateSubscriber()
         joy_subscriber = JoySubscriber()
         teleop_subscriber = TeleopSubscriber()
+        camera_subscriber = CameraSubscriber()
+        odom_subscriber = OdomSubscriber()
 
         rate = rospy.Rate(100) # 100hz
 
         # Wait until a joint_state message is received
         # Necessary to compute the reference_position
         # not (len(joint_state_subscriber.joint_state.position[2:6]) == 4)
-        while not joint_state_subscriber.joint_state.position and not rospy.is_shutdown():
-            rate.sleep()
+        """while not joint_state_subscriber.joint_state.position and not rospy.is_shutdown():
+            rate.sleep()"""
 
         print("Read initial joint state")
+
+        while (camera_subscriber.color is None or camera_subscriber.depth is None) and not rospy.is_shutdown():
+        #while camera_subscriber.color is None and not rospy.is_shutdown():
+            rate.sleep()
+        
+        """img_d = camera_subscriber.depth
+        img_d = cv2.rotate(img_d, cv2.ROTATE_180)
+        print(img_d[200:280, 280:360])
+        print(np.unique(img_d))
+        cv2.imwrite("img3.jpg", img_d)
+        exit()"""
 
         home_state_position = [0, 0, 0, 0]
         throw_state_position = [0, -np.pi * 0.6, -np.pi * 0.5, -np.pi * 0.5]
         pickup_state_position = [0, np.pi * 0.36, -np.pi * 0.4, np.pi * 0.3]
 
         print("Started home trajectory")
-        goto(home_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
+        #goto(home_state_position, joint_state_subscriber, plan_kinematic_path, arm_publisher, rate)
 
         joint_state_ik = JointState()
         joint_state_ik.header = joint_state_subscriber.joint_state.header
@@ -293,8 +344,8 @@ def main():
         joint_state_ik.position = home_state_position
         joint_state_ik.velocity = [0, 0, 0, 0]
 
-        reference_position = compute_fk(joint_state_ik)
-        reference_position.y = 0
+        #reference_position = compute_fk(joint_state_ik)
+        #reference_position.y = 0
 
         reference_angle = 0
 
@@ -321,7 +372,7 @@ def main():
         listener.start()
 
         print("Ready")
-        
+
         while not rospy.is_shutdown():
             rate.sleep()
 
@@ -332,43 +383,289 @@ def main():
                 teleop_subscriber.stop()
                 continue"""
 
-
-            speed_modifier = 1
             if active_keys["shift"] or joy_subscriber.buttons[0] == 1:
-                speed_modifier = 2
+                active_keys["shift"] = False
+                joy_subscriber.buttons[0] = 0
 
+                #image_run = True
+                #while image_run:
+
+                img = camera_subscriber.color
+                img = cv2.rotate(img, cv2.ROTATE_180)
+
+                #cv2.imwrite("img.jpg", img)
+
+                img_t = img.copy()
+                img_t = cv2.cvtColor(img_t, cv2.COLOR_BGR2HSV)
+
+                reference_color_rgb = [150, 80, 250]
+                reference_color_hsv = list(cv2.cvtColor(np.array([[reference_color_rgb]], dtype=np.uint8), cv2.COLOR_BGR2HSV)[0, 0, :])
+                reference_threshold = [5, 100, 100]
+
+                for i in range(3):
+                    img_t[img_t[:, :, i] < reference_color_hsv[i] - reference_threshold[i]] = [0, 0, 0]
+                    img_t[img_t[:, :, i] > reference_color_hsv[i] + reference_threshold[i]] = [0, 0, 0]
+                
+                img_t = cv2.cvtColor(img_t, cv2.COLOR_HSV2BGR)
+                img_t = cv2.cvtColor(img_t, cv2.COLOR_BGR2GRAY)
+                (thresh, img_t) = cv2.threshold(img_t, 10, 255, cv2.THRESH_BINARY)
+
+                #cv2.imwrite("img2.jpg", img_t)
+
+                # https://en.wikipedia.org/wiki/Mathematical_morphology
+
+                # Closing: Fill holes and connect components
+                kernel = np.ones((5, 5), np.uint8)
+                img_t = cv2.dilate(img_t, kernel)
+                img_t = cv2.erode(img_t, kernel)
+                
+                # Opening: remove small noise
+                kernel = np.ones((5, 5), np.uint8)
+                img_t = cv2.erode(img_t, kernel)
+                img_t = cv2.dilate(img_t, kernel)
+
+                #cv2.imwrite("img3.jpg", img_t)
+
+                totalLabels, label_ids, values, centroid = cv2.connectedComponentsWithStats(img_t, 4, cv2.CV_8U)
+
+                """for i in range(1, totalLabels):
+                    if values[i, cv2.CC_STAT_AREA] > 100:
+                        print(values[i, cv2.CC_STAT_AREA])
+                        if centroid[i, 0] > 350:
+                            wheels_twist.linear.x = wheels_linear_speed
+                            wheels_twist.angular.z = 0
+                            wheel_publisher.publish(wheels_twist)
+                            break
+                        elif centroid[i, 0] < 290:
+                            wheels_twist.linear.x = - wheels_linear_speed
+                            wheels_twist.angular.z = 0
+                            wheel_publisher.publish(wheels_twist)
+                            break
+                        elif values[i, cv2.CC_STAT_AREA] < 10000:
+                            wheels_twist.linear.x = wheels_linear_speed
+                            wheels_twist.angular.z = 0
+                            wheel_publisher.publish(wheels_twist)
+                            break
+                        else:
+                            wheels_twist.linear.x = 0
+                            wheels_twist.angular.z = 0
+                            wheel_publisher.publish(wheels_twist)
+                            image_run = False
+                            break"""
+            
+                #continue
+
+                dst = cv2.cornerHarris(img_t, 4, 3, 0.04)
+                object_corners = np.where(dst > 0.1 * dst.max())
+
+                img_tt = img_t.copy()
+                img_tt = cv2.cvtColor(img_tt, cv2.COLOR_GRAY2BGR)
+                
+                """object_bounding_boxes = {}
+                for y, x in zip(*object_corners):
+                    label = label_ids[y, x]
+                    if label != 0 and values[label, cv2.CC_STAT_AREA] > 500:
+                        if label not in object_bounding_boxes:
+                            object_bounding_boxes[label] = {"x": [10000, -1], "y": [10000, -1]}
+
+                        if x < object_bounding_boxes[label]["x"][0]:
+                            object_bounding_boxes[label]["x"][0] = x
+                        if x > object_bounding_boxes[label]["x"][1]:
+                            object_bounding_boxes[label]["x"][1] = x
+
+                        if y < object_bounding_boxes[label]["y"][0]:
+                            object_bounding_boxes[label]["y"][0] = y
+                        if y > object_bounding_boxes[label]["y"][1]:
+                            object_bounding_boxes[label]["y"][1] = y
+
+                        #img_tt[y, x] = [0, 0, 255]
+                        img_tt = cv2.circle(img_tt, (x, y), 5, [0, 0, 255], -1)
+                
+                cv2.imwrite("img4.jpg", img_tt)
+
+                img_tt = img_t.copy()
+                img_tt = cv2.cvtColor(img_tt, cv2.COLOR_GRAY2BGR)
+                
+                for key, bb in object_bounding_boxes.items():
+                    minX = bb["x"][0]
+                    maxX = bb["x"][1]
+                    minY = bb["y"][0]
+                    maxY = bb["y"][1]
+
+                    img_tt = cv2.line(img_tt, (minX, minY), (minX, maxY), [0, 0, 255], 5)
+                    img_tt = cv2.line(img_tt, (minX, maxY), (maxX, maxY), [0, 0, 255], 5)
+                    img_tt = cv2.line(img_tt, (maxX, maxY), (maxX, minY), [0, 0, 255], 5)
+                    img_tt = cv2.line(img_tt, (maxX, minY), (minX, minY), [0, 0, 255], 5)
+                
+                cv2.imwrite("img5.jpg", img_tt)"""
+                
+                object_bounding_boxes = {}
+                for y, x in zip(*object_corners):
+                    label = label_ids[y, x]
+                    if label != 0 and values[label, cv2.CC_STAT_AREA] > 100:
+                        if label not in object_bounding_boxes:
+                            object_bounding_boxes[label] = {"minX": [10000, 0], "maxX": [-1, -0], "maxY": [0, -1]}
+                        
+                        if x < object_bounding_boxes[label]["minX"][0]:
+                            object_bounding_boxes[label]["minX"][0] = x
+                            object_bounding_boxes[label]["minX"][1] = y
+                        
+                        if x > object_bounding_boxes[label]["maxX"][0]:
+                            object_bounding_boxes[label]["maxX"][0] = x
+                            object_bounding_boxes[label]["maxX"][1] = y
+                        
+                        if y > object_bounding_boxes[label]["maxY"][1]:
+                            object_bounding_boxes[label]["maxY"][0] = x
+                            object_bounding_boxes[label]["maxY"][1] = y
+
+
+                img_tt = img_t.copy()
+                img_tt = cv2.cvtColor(img_tt, cv2.COLOR_GRAY2BGR)
+                
+                for key, bb in object_bounding_boxes.items():
+                    minX_x = bb["minX"][0]
+                    minX_y = bb["minX"][1]
+
+                    maxX_x = bb["maxX"][0]
+                    maxX_y = bb["maxX"][1]
+
+                    maxY_x = bb["maxY"][0]
+                    maxY_y = bb["maxY"][1]
+
+                    if (maxY_x - minX_x)**2 + (maxY_y - minX_y)**2 > (maxY_x - maxX_x)**2 + (maxY_y - maxX_y)**2:
+                        object_angle = np.arctan((maxY_x - minX_x) / (maxY_y - minX_y))
+                    else:
+                        object_angle = np.arctan((maxY_x - maxX_x) / (maxY_y - maxX_y))
+                    
+                    pdx = (minX_x + maxX_x + maxY_x) // 3
+                    pdy = (minX_y + maxX_y + maxY_y) // 3
+                    
+
+                    img_d = cv2.rotate(camera_subscriber.depth, cv2.ROTATE_180)
+                    #img_d = camera_subscriber.depth
+                    total_distance = img_d[pdy, pdx] / 1000
+                    if total_distance == 0:
+                        print("Distance 0")
+                        break
+
+                    distance = np.sqrt(total_distance**2 - 0.05**2)
+                    
+                    travel_angle = np.arctan((pdx - 320) / (480 - pdy))
+                    distance_x = distance * np.sin(travel_angle)
+                    distance_y = distance * np.cos(travel_angle)
+
+                    """print(f"Object angle: {object_angle * 180 / 3.14:.1f} degrees")
+                    print(f"Total distance: {total_distance * 100:.1f} cm")
+                    print(f"Travel angle: {travel_angle * 180 / 3.14:.1f} degrees")
+                    print(f"x distance: {distance_x * 100:.1f} cm")
+                    print(f"y distance: {distance_y * 100:.1f} cm")"""
+                    
+                    """img_tt = cv2.circle(img_tt, (minX_x, minX_y), 5, [0, 0, 255], -1)
+                    img_tt = cv2.circle(img_tt, (maxX_x, maxX_y), 5, [0, 0, 255], -1)
+                    img_tt = cv2.circle(img_tt, (maxY_x, maxY_y), 5, [0, 0, 255], -1)
+
+                    img_tt = cv2.line(img_tt, (minX_x, minX_y), (maxY_x, maxY_y), [0, 0, 255], 5)
+                    img_tt = cv2.line(img_tt, (maxX_x, maxX_y), (maxY_x, maxY_y), [0, 0, 255], 5)
+
+                    cv2.imwrite("img6.jpg", img_tt)"""
+
+
+                    orientation = odom_subscriber.orientation
+
+                    angle = 2 * np.arccos(orientation.w)
+                    z_axis = orientation.z / np.sqrt(1 - orientation.w * orientation.w)
+                    angle *= z_axis
+
+                    dx = distance_y - np.cos(object_angle) * 0.1
+                    dy = - distance_x - np.sin(object_angle) * 0.1
+
+                    dx_transformed = np.cos(angle) * dx - np.sin(angle) * dy
+                    dy_transformed = np.sin(angle) * dx + np.cos(angle) * dy
+
+                    position_x = odom_subscriber.position.x + dx_transformed
+                    position_y = odom_subscriber.position.y + dy_transformed
+
+                    angle += object_angle
+
+                    qz = np.sin(angle / 2)
+                    qw = np.cos(angle / 2)
+
+                    target_pose = PoseStamped()
+                    target_pose.header.frame_id = "odom"
+                    target_pose.pose.position.x = position_x
+                    target_pose.pose.position.y = position_y
+                    target_pose.pose.position.z = 0
+                    target_pose.pose.orientation.x = 0
+                    target_pose.pose.orientation.y = 0
+                    target_pose.pose.orientation.z = qz
+                    target_pose.pose.orientation.w = qw
+
+                    pose_publisher.publish(target_pose)
+
+                
+                    """angle = np.arctan2(target_pose.pose.position.y - odom_subscriber.position.y, target_pose.pose.position.x - odom_subscriber.position.x)
+                    initial_target_rotation_z = qz = np.sin(angle / 2)
+                    initial_target_rotation_w = np.cos(angle / 2)
+
+                    wheels_twist.linear.x = 0
+                    wheels_twist.angular.z = wheels_angular_speed
+                    wheel_publisher.publish(wheels_twist)
+
+                    start_time = rospy.Time.now().to_sec()
+                    while (abs(odom_subscriber.orientation.z - initial_target_rotation_z) > 0.1 or abs(odom_subscriber.orientation.w - initial_target_rotation_w) > 0.1) and rospy.Time.now().to_sec() - start_time < 3:
+                        rate.sleep()
+                    
+                    wheels_twist.linear.x = wheels_linear_speed
+                    wheels_twist.angular.z = 0
+                    wheel_publisher.publish(wheels_twist)
+                    
+                    start_time = rospy.Time.now().to_sec()
+                    while (abs(odom_subscriber.position.x - target_pose.pose.position.x) > 0.1 or abs(odom_subscriber.position.y - target_pose.pose.position.y) > 0.1) and rospy.Time.now().to_sec() - start_time < 3:
+                        rate.sleep()
+                    
+                    wheels_twist.linear.x = 0
+                    wheels_twist.angular.z = wheels_angular_speed
+                    wheel_publisher.publish(wheels_twist)
+
+                    start_time = rospy.Time.now().to_sec()
+                    while (abs(odom_subscriber.orientation.z - target_pose.pose.orientation.z) > 0.1 or abs(odom_subscriber.orientation.w - target_pose.pose.orientation.w) > 0.1) and rospy.Time.now().to_sec() - start_time < 3:
+                        rate.sleep()
+                    
+                    wheels_twist.linear.x = 0
+                    wheels_twist.angular.z = 0
+                    wheel_publisher.publish(wheels_twist)"""
 
             wheels_twist.linear.x = 0
             wheels_twist.angular.z = 0
             
             if active_keys["w"] and not active_keys["s"]:
-                wheels_twist.linear.x = wheels_linear_speed * speed_modifier
+                wheels_twist.linear.x = wheels_linear_speed
             elif active_keys["s"] and not active_keys["w"]:
-                wheels_twist.linear.x = - wheels_linear_speed * speed_modifier
+                wheels_twist.linear.x = - wheels_linear_speed
             elif joy_subscriber.axes[1] != 0:
-                wheels_twist.linear.x = joy_subscriber.axes[1] * wheels_linear_speed * speed_modifier
+                wheels_twist.linear.x = joy_subscriber.axes[1] * wheels_linear_speed
 
             if active_keys["a"] and not active_keys["d"]:
-                wheels_twist.angular.z += wheels_angular_speed * speed_modifier
+                wheels_twist.angular.z += wheels_angular_speed
             elif active_keys["d"] and not active_keys["a"]:
-                wheels_twist.angular.z += - wheels_angular_speed * speed_modifier
+                wheels_twist.angular.z += - wheels_angular_speed
             elif joy_subscriber.axes[0] != 0:
-                wheels_twist.angular.z = joy_subscriber.axes[0] * wheels_angular_speed * speed_modifier
+                wheels_twist.angular.z = joy_subscriber.axes[0] * wheels_angular_speed
 
-            wheel_publisher.publish(wheels_twist)
+            #wheel_publisher.publish(wheels_twist)
 
 
             arm_rotate = False
             arm_translate = False
 
             if active_keys["l"] and not active_keys["j"] and reference_angle > -3:
-                reference_angle -= arm_speed_y * speed_modifier
+                reference_angle -= arm_speed_y
                 arm_rotate = True
             elif active_keys["j"] and not active_keys["l"] and reference_angle < 3:
-                reference_angle += arm_speed_y * speed_modifier
+                reference_angle += arm_speed_y
                 arm_rotate = True
             elif joy_subscriber.axes[3] != 0:
-                reference_angle += arm_speed_y * joy_subscriber.axes[3] * speed_modifier
+                reference_angle += arm_speed_y * joy_subscriber.axes[3]
                 arm_rotate = True
 
 
@@ -376,23 +673,23 @@ def main():
             reference_position_backup_z = reference_position.z
 
             if active_keys["i"] and not active_keys["k"]:
-                reference_position.x += arm_speed_x * speed_modifier
+                reference_position.x += arm_speed_x
                 arm_translate = True
             elif active_keys["k"] and not active_keys["i"]:
-                reference_position.x -= arm_speed_x * speed_modifier
+                reference_position.x -= arm_speed_x
                 arm_translate = True
             elif joy_subscriber.axes[4] != 0:
-                reference_position.x += arm_speed_x * joy_subscriber.axes[4] * speed_modifier
+                reference_position.x += arm_speed_x * joy_subscriber.axes[4]
                 arm_translate = True
 
             if active_keys["o"] and not active_keys["u"]:
-                reference_position.z += arm_speed_z * speed_modifier
+                reference_position.z += arm_speed_z
                 arm_translate = True
             elif active_keys["u"] and not active_keys["o"]:
-                reference_position.z -= arm_speed_z * speed_modifier
+                reference_position.z -= arm_speed_z
                 arm_translate = True
             elif joy_subscriber.axes[2] - joy_subscriber.axes[5] != 0:
-                reference_position.z += arm_speed_z * (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2 * speed_modifier
+                reference_position.z += arm_speed_z * (joy_subscriber.axes[2] - joy_subscriber.axes[5]) / 2
                 arm_translate = True
 
             
